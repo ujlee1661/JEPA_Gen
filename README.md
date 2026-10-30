@@ -1,0 +1,13 @@
+# A9 결합 ON
+
+미래 시간·feature 표현을 예측하고 temporal tabular 이벤트 시퀀스를 공동 생성하는 A9 결합 ON 프레임워크입니다. 구조, 학습 및 자유 생성의 정보 경계, 손실 구성은 [설명 문서](docs/A9_COMBINED_ON_FRAMEWORK_KO.md)를 참고하세요.
+
+실행 진입점은 `scripts/run_a9_combined_experiment.py`입니다. 기존 코드의 A6/A7 이름은 현재 모델, teacher, 전처리와 평가가 사용하는 공통 의존성이므로 남아 있습니다. 생성·학습에는 해당 스크립트에 지정된 WSL 데이터, 고정 teacher 체크포인트·캐시, Python 런타임이 필요합니다. 기존 실행 코드나 체크포인트를 재배치하지 않았습니다.
+
+**복제 후 바로 재현되는 독립 패키지는 아닙니다.** 실행 스크립트는 기존 실험의 WSL 경로와 별도로 준비된 데이터·teacher 체크포인트·캐시·원본 평가기에 의존합니다. 이 저장소에는 이 파일들을 포함하지 않습니다. 원본 실험 런타임에는 PyTorch·NumPy 외에도 pandas, SciPy, scikit-learn 등 필요한 라이브러리가 설치돼 있어야 합니다. 다른 환경에서는 경로와 입력 자료를 별도로 준비해야 합니다.
+
+저장소에는 A9의 주요 비교 보고서와 요약 대시보드만 포함합니다. 원본 생성 결과와 baseline 근거는 로컬 `outputs/paper_reproduction`에 보존하지만 업로드하지 않습니다. 데이터·개별 생성 CSV·체크포인트·로컬 환경과 복구 보관물도 업로드 대상이 아닙니다.
+
+주요 결과: [기존 A9](outputs/paper_reproduction/a9_retail_comparison_v1/report.md) · [시간 teacher](outputs/paper_reproduction/a9_conditioned_time_comparison_v1/report.md) · [feature 조건 비교](outputs/paper_reproduction/a9_generic_comparison_v1/report.md) · [결합 모델](outputs/paper_reproduction/a9_combined_comparison_v1/report.md)
+
+이전 A9 실험 결과는 학습 모집단 평가이며, 새로운 고객에 대한 일반화를 보장하지 않습니다.

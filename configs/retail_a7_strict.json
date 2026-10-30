@@ -1,0 +1,21 @@
+{
+  "model_name": "A7 strict335 learned-future auxiliary ON/OFF",
+  "training_seed": 9,
+  "generation_seeds": [1, 2, 3],
+  "teacher_steps": 5000,
+  "teacher_batch_size": 32,
+  "teacher_learning_rate": 0.0003,
+  "generator_steps": 20000,
+  "batch_size": 16,
+  "learning_rate": 0.0003,
+  "weight_decay": 0.01,
+  "gradient_clip": 1.0,
+  "code_noise_std": 0.03,
+  "sample_steps": 50,
+  "max_generated_events": 4096,
+  "arms": ["A7_AUX_ON", "A7_AUX_OFF"],
+  "aux_weights": {"A7_AUX_ON": 1.0, "A7_AUX_OFF": 0.0},
+  "teacher": {"code_dim": 64, "width": 128, "layers": 2, "heads": 4, "count_components": 4},
+  "model": {"code_dim": 64, "width": 128, "layers": 4, "heads": 4, "hidden": 128, "components": 8, "diffusion_steps": 100},
+  "selection": "fixed_final_update_no_validation"
+}

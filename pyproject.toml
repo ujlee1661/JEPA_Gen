@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tabjepa"
+version = "0.2.0"
+description = "JEPA auxiliary experiments for irregular mixed-type event generation"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24,<3", "torch>=2.3"]
+
+[project.optional-dependencies]
+retail = ["openpyxl>=3.1"]
+dev = ["pytest>=7", "mypy>=1"]
+
+[tool.setuptools.packages.find]
+include = ["pgjepa*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+files = ["pgjepa"]
