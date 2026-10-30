@@ -14,9 +14,9 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.nn.utils.rnn import pack_padded_sequence
 
-from .count import discretized_count_log_mass
-from .spacing import face_log_mass, project_clr, sample_face
-from .diffusion import v_target, v_to_x0_epsilon, zero_terminal_snr
+from ..layers.count import discretized_count_log_mass
+from ..layers.spacing import face_log_mass, project_clr, sample_face
+from ..layers.diffusion import v_target, v_to_x0_epsilon, zero_terminal_snr
 
 
 class SequenceGenerator(nn.Module):
@@ -65,6 +65,21 @@ class SequenceGenerator(nn.Module):
         alpha = alpha/alpha[0]
         beta = (1-alpha[1:]/alpha[:-1]).clamp(max=.1)
         self.register_buffer('alpha_bar', zero_terminal_snr(torch.cumprod(1-beta, 0).float()))
+
+    @property
+    def history_encoder(self) -> nn.GRU:
+        """Observed-history GRU; token projection remains a separate layer."""
+        return self.history_gru
+
+    @property
+    def context_encoder(self) -> nn.GRU:
+        """Noisy-prefix GRU; input projection and initial state are separate."""
+        return self.prefix_gru
+
+    @property
+    def time_predictor(self) -> nn.Sequential:
+        """Predict the time-target distribution from the context state."""
+        return self.prediction
 
     def _calendar(self, attrs: Tensor, anchor: Tensor, delta: Tensor) -> Tensor:
         if attrs.ndim != 2 or attrs.shape[1] != self.attrs_dim or not bool(torch.isfinite(attrs).all()):

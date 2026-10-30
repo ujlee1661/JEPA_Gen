@@ -5,7 +5,7 @@ import math
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
-from .sequence_model import SequenceGenerator
+from .sequence import SequenceGenerator
 
 
 class PredictiveSequenceGenerator(SequenceGenerator):
@@ -17,6 +17,11 @@ class PredictiveSequenceGenerator(SequenceGenerator):
         self.feature_residual = nn.Sequential(nn.Linear(4*code, width), nn.SiLU(), nn.Linear(width, width))
         nn.init.zeros_(self.feature_residual[-1].weight)
         nn.init.zeros_(self.feature_residual[-1].bias)
+
+    @property
+    def feature_predictor(self) -> nn.Sequential:
+        """Predict the feature-target distribution from the context state."""
+        return self.feature_prediction
 
     def forward_velocity(self, noisy: Tensor, steps: Tensor, batch: dict) -> dict[str, Tensor]:
         self._validate(batch, noisy)

@@ -9,8 +9,8 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from .spacing import project_clr
-from .teacher_base import FutureTeacher
+from ..layers.spacing import project_clr
+from .base import FutureTargetEncoder
 
 
 DISTRIBUTIONAL_TEACHER_SPEC = {
@@ -22,7 +22,7 @@ DISTRIBUTIONAL_TEACHER_SPEC = {
     'paired_control': 'same architecture/init/data/noise/update count; objective only differs'}
 
 
-class DistributionTeacher(FutureTeacher):
+class DistributionTargetEncoder(FutureTargetEncoder):
     def __init__(self, token_dim: int, attrs_dim: int, observation_end: float,
                  code_dim: int = 64, width: int = 128, layers: int = 2,
                  heads: int = 4, decoder_layers: int = 4):

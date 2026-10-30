@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import torch
 from torch import Tensor
-from .teacher_base import FutureTeacher
-from .spacing import face_log_mass, project_clr
+from .base import FutureTargetEncoder
+from ..layers.spacing import face_log_mass, project_clr
 
 
-class TimeTeacher(FutureTeacher):
+class TimeTargetEncoder(FutureTargetEncoder):
     def encode(self, batch: dict[str, Tensor]) -> Tensor:
         valid, active, events, count, _, position = self._layout(batch)
         tokens = batch['tokens']

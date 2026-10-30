@@ -11,5 +11,8 @@
   "generation_batch_size": 8,
   "sample_steps": 50,
   "max_generated_events": 4096,
+  "target_encoder": {"steps": 5000, "batch_size": 32, "learning_rate": 0.0003,
+                     "cache_batch_size": 32, "log_interval": 100,
+                     "width": 128, "layers": 2, "heads": 4, "decoder_layers": 4},
   "model": {"code_dim": 64, "width": 128, "layers": 4, "heads": 4, "hidden": 128, "components": 8, "diffusion_steps": 100}
 }

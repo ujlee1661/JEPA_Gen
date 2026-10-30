@@ -2,7 +2,7 @@
 from __future__ import annotations
 import numpy as np
 import torch
-from .spacing import encode_spacing
+from ..layers.spacing import encode_spacing
 
 def _complete_window(raw, time_scale, metadata=None):
     count=int(raw['count'])

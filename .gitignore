@@ -9,9 +9,9 @@ dist/
 .venv/
 venv/
 .omx/
-tmp/
-outputs/
-data/
+/tmp/
+/outputs/
+/data/
 
 # Historical experiment implementations remain local for checkpoint provenance.
 pgjepa/

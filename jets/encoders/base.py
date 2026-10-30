@@ -11,8 +11,8 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from .count import discretized_count_log_mass
-from .spacing import face_log_mass, project_clr
+from ..layers.count import discretized_count_log_mass
+from ..layers.spacing import face_log_mass, project_clr
 
 
 TEACHER_PREDECLARED = {'updates': 5000, 'batch_size': 32, 'learning_rate': 3e-4,
@@ -21,7 +21,7 @@ TEACHER_PREDECLARED = {'updates': 5000, 'batch_size': 32, 'learning_rate': 3e-4,
                        'student_target_noise_std': .03}
 
 
-class FutureTeacher(nn.Module):
+class FutureTargetEncoder(nn.Module):
     def __init__(self, token_dim: int, attrs_dim: int, observation_end: float,
                  code_dim: int = 64, width: int = 128, layers: int = 2,
                  heads: int = 4, count_components: int = 4):
@@ -152,7 +152,7 @@ class FutureTeacher(nn.Module):
         self.code_mean.copy_(raw.mean(0))
         self.code_std.copy_(raw.std(0, unbiased=False).clamp_min(1e-6))
 
-    def freeze(self) -> 'FutureTeacher':
+    def freeze(self) -> 'FutureTargetEncoder':
         self.requires_grad_(False)
         self.eval()
         return self

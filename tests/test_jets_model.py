@@ -1,8 +1,8 @@
 """Standalone interface and information-boundary tests for JETS."""
 import pytest
 import torch
-from jets.model import JETSGenerator
-from jets.teachers import TimeTeacher, FeatureTeacher
+from jets.models import JETSGenerator
+from jets.encoders import TimeTargetEncoder, FeatureTargetEncoder
 
 
 def model():
@@ -49,22 +49,22 @@ def test_disabled_feature_aux_ignores_teacher_target():
     torch.testing.assert_close(first, second, rtol=0, atol=0)
 
 
-def test_time_teacher_does_not_read_future_marks():
-    teacher = TimeTeacher(5, 2, 10., code_dim=8, width=16, layers=1, heads=2).eval()
+def test_time_target_encoder_does_not_read_future_marks():
+    target_encoder = TimeTargetEncoder(5, 2, 10., code_dim=8, width=16, layers=1, heads=2).eval()
     original = batch()
     altered = dict(original)
     altered['tokens'] = original['tokens'].clone()
     altered['tokens'][..., 1:] += 100.
     with torch.no_grad():
-        torch.testing.assert_close(teacher.encode(original), teacher.encode(altered), rtol=0, atol=0)
-        first, _ = teacher.loss(original)
-        second, _ = teacher.loss(altered)
+        torch.testing.assert_close(target_encoder.encode(original), target_encoder.encode(altered), rtol=0, atol=0)
+        first, _ = target_encoder.loss(original)
+        second, _ = target_encoder.loss(altered)
     torch.testing.assert_close(first, second, rtol=0, atol=0)
 
 
-def test_feature_teacher_decoder_does_not_receive_clean_marks():
-    teacher = FeatureTeacher(5, 2, 10., code_dim=8, width=16, layers=1,
-                             heads=2, decoder_layers=1).eval()
+def test_feature_target_decoder_does_not_receive_clean_marks():
+    target_encoder = FeatureTargetEncoder(5, 2, 10., code_dim=8, width=16, layers=1,
+                                          heads=2, decoder_layers=1).eval()
     original = batch()
     altered = dict(original)
     altered['tokens'] = original['tokens'].clone()
@@ -73,8 +73,8 @@ def test_feature_teacher_decoder_does_not_receive_clean_marks():
     global_noise = torch.randn_like(z)
     local_noise = torch.randn(2, 4, 5)
     with torch.no_grad():
-        first = teacher.sample_reconstruction(z, original, global_noise, local_noise)
-        second = teacher.sample_reconstruction(z, altered, global_noise, local_noise)
+        first = target_encoder.sample_reconstruction(z, original, global_noise, local_noise)
+        second = target_encoder.sample_reconstruction(z, altered, global_noise, local_noise)
     torch.testing.assert_close(first, second, rtol=0, atol=0)
 
 

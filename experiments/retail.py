@@ -17,10 +17,9 @@ import pandas as pd
 import torch
 
 from experiments.data import dense_targets, json_digest, load_bank, load_cache, read_json, sha256, write_json
-from jets.data import collate_windows, inverse_marks
-from jets.model import JETSGenerator
-from jets.preprocessing import QuantilePreprocessor
-from jets.spacing import decode_spacing
+from jets.data import QuantilePreprocessor, collate_windows, inverse_marks
+from jets.layers.spacing import decode_spacing
+from jets.models import JETSGenerator
 
 
 def seed_all(seed):
@@ -42,7 +41,7 @@ def build_model(data, config, device):
 
 def source_hashes():
     root = Path(__file__).resolve().parents[1]
-    paths = sorted([*(root / 'jets').glob('*.py'), *(root / 'experiments').glob('*.py')])
+    paths = sorted([*(root / 'jets').rglob('*.py'), *(root / 'experiments').rglob('*.py')])
     return {str(path.relative_to(root)): sha256(path) for path in paths}
 
 
@@ -50,6 +49,48 @@ def atomic_torch_save(value, path):
     temp = path.with_suffix(path.suffix + '.tmp')
     torch.save(value, temp)
     temp.replace(path)
+
+
+def decode_category(value, vocabulary, observed=True):
+    """Restore an observed category, retaining numeric and string labels."""
+    if not observed:
+        return np.nan
+    index = int(value)
+    if not 1 <= index <= len(vocabulary):
+        return np.nan
+    category = vocabulary[index - 1]
+    try:
+        return float(category)
+    except (ValueError, TypeError):
+        return category
+
+
+def read_evaluation_table(path, id_column, id_dtype='infer'):
+    """Read identifiers consistently with the chosen input-table schema."""
+    if id_dtype not in ('infer', 'string'):
+        raise ValueError('id_dtype must be infer or string')
+    kwargs = {'converters': {id_column: str}} if id_dtype == 'string' else {}
+    return pd.read_csv(path, **kwargs)
+
+
+def validate_generation_inputs(bank_path, checkpoint, prep_state, parents):
+    """Check artifact links when receipts contain them; report legacy gaps."""
+    bank_digest = sha256(bank_path)
+    identity = checkpoint.get('identity') or {}
+    hashes = identity.get('input_sha256') or checkpoint.get('sources')
+    checkpoint_verified = bool(hashes)
+    if hashes and bank_digest not in hashes.values():
+        raise ValueError('Generation bank does not match checkpoint training inputs')
+    receipt_path = bank_path.parent / 'manifest.json'
+    bank_receipt = read_json(receipt_path) if receipt_path.exists() else {}
+    checks = {'preprocessor_hash': json_digest(prep_state), 'parent_hash': json_digest(parents)}
+    for key, actual in checks.items():
+        expected = bank_receipt.get(key)
+        if expected is not None and expected != actual:
+            raise ValueError(f'Generation {key} does not match the prepared bank')
+    return {'checkpoint_bank_verified': checkpoint_verified,
+            'bank_preprocessor_verified': 'preprocessor_hash' in bank_receipt,
+            'bank_parents_verified': 'parent_hash' in bank_receipt}
 
 
 def train(args):
@@ -157,6 +198,7 @@ def generate(args):
         if (manifest.get('preprocessor_hash') != json_digest(prep_state)
                 or manifest.get('parent_hash') != json_digest(parents)):
             raise ValueError('Preprocessor or parent IDs differ from their prepared manifest')
+    artifact_checks = validate_generation_inputs(bank_path, checkpoint, prep_state, parents)
     prep = QuantilePreprocessor.from_state_dict(prep_state)
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -187,8 +229,9 @@ def generate(args):
                 columns[name] = np.where(marks['mask'][:, j] >= .5, marks['x_num'][:, j], np.nan)
             for j, name in enumerate(prep.categorical_names):
                 vocabulary = prep.vocabularies[j]
-                columns[name] = [float(vocabulary[int(v) - 1]) if 1 <= int(v) <= len(vocabulary) else np.nan
-                                 for v in marks['x_cat'][:, j]]
+                observed = marks['mask'][:, prep.n_num + j] >= .5
+                columns[name] = [decode_category(v, vocabulary, is_observed)
+                                 for v, is_observed in zip(marks['x_cat'][:, j], observed)]
             rows.append(pd.DataFrame(columns))
             counts.append({'query_index': start + index, 'entity': entity, 'count': count, 'anchor': 0., 'delta': end})
     frame = pd.concat(rows, ignore_index=True)
@@ -199,6 +242,7 @@ def generate(args):
         'bank_sha256': sha256(bank_path), 'preprocessor_sha256': sha256(args.preprocessor),
         'parents_sha256': sha256(args.parents),
         'counts_sha256': sha256(out / 'counts.csv'), 'sample_steps': args.sample_steps,
+        'artifact_checks': artifact_checks,
         'count_or_face_or_teacher_oracle': False, 'scope': 'BOS generation; native count and face',
         'warning': 'External artifacts must be trusted; this new receipt is not a legacy experiment receipt'})
     print(f'Generated {len(frame)} events for {len(parents)} parents: {out}', flush=True)
@@ -211,7 +255,9 @@ def evaluate(args):
         raise ImportError('Cannot load supplied scorer')
     scorer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(scorer)
-    real, synthetic = pd.read_csv(args.real), pd.read_csv(args.synthetic)
+    id_dtype = getattr(args, 'id_dtype', 'infer')
+    real = read_evaluation_table(args.real, 'account_id', id_dtype)
+    synthetic = read_evaluation_table(args.synthetic, 'entity', id_dtype)
     result = {'ts': scorer.ts(real, synthetic), 'cs': scorer.cs(args.dataset, real, synthetic),
         'sd': scorer.sd(args.dataset, real, synthetic), 'lg': scorer.lg(args.dataset, real, synthetic),
         'joint_ff': scorer.jointff(real, synthetic)}
@@ -222,9 +268,15 @@ def evaluate(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    p = sub.add_parser('train', help='Train from an initial checkpoint and existing frozen teacher caches')
-    for name in ('bank', 'config', 'time-cache', 'time-teacher', 'feature-cache', 'feature-teacher', 'initial', 'output'):
+    p = sub.add_parser('train', help='Train from an initial checkpoint and frozen target-encoder caches')
+    for name in ('bank', 'config', 'time-cache', 'feature-cache', 'initial', 'output'):
         p.add_argument('--' + name, type=Path, required=True)
+    time_source = p.add_mutually_exclusive_group(required=True)
+    time_source.add_argument('--time-target-encoder', dest='time_teacher', metavar='PATH', type=Path)
+    time_source.add_argument('--time-teacher', dest='time_teacher', metavar='PATH', type=Path, help=argparse.SUPPRESS)
+    feature_source = p.add_mutually_exclusive_group(required=True)
+    feature_source.add_argument('--feature-target-encoder', dest='feature_teacher', metavar='PATH', type=Path)
+    feature_source.add_argument('--feature-teacher', dest='feature_teacher', metavar='PATH', type=Path, help=argparse.SUPPRESS)
     p.add_argument('--device', default='cpu')
     p.add_argument('--steps', type=int, help='Explicit budget override; must not be presented as the original 20k experiment')
     p.add_argument('--feature-weight', type=float, choices=(0., 1.), default=1.)
@@ -239,6 +291,8 @@ def main():
     for name in ('real', 'synthetic', 'scorer'):
         p.add_argument('--' + name, type=Path, required=True)
     p.add_argument('--dataset', default='online_retail'); p.set_defaults(func=evaluate)
+    p.add_argument('--id-dtype', choices=('infer', 'string'), default='infer',
+                   help='Set string to preserve leading-zero entity IDs when evaluating')
     args = parser.parse_args()
     if getattr(args, 'batch_size', 1) < 1:
         parser.error('batch size must be positive')

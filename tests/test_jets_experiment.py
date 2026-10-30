@@ -1,13 +1,50 @@
 """Standalone tests for prepared-artifact boundaries and training recovery."""
 from argparse import Namespace
 import json
+import math
 
 import pytest
 import torch
 
 from experiments import data as artifact
 from experiments import retail
-from jets.model import JETSGenerator
+from jets.models import JETSGenerator
+
+
+def test_category_export_supports_numeric_and_string_vocabularies():
+    assert retail.decode_category(1, ['12']) == 12.0
+    assert retail.decode_category(2, ['12', 'purchase']) == 'purchase'
+    assert math.isnan(retail.decode_category(0, ['12']))
+    assert math.isnan(retail.decode_category(1, ['12'], observed=False))
+
+
+def test_evaluation_preserves_string_identifiers(tmp_path):
+    real = tmp_path / 'real.csv'
+    generated = tmp_path / 'generated.csv'
+    real.write_text('account_id,value\n001,2\nNA,3\n', encoding='utf-8')
+    generated.write_text('entity,value\n001,2\nNA,3\n', encoding='utf-8')
+    assert retail.read_evaluation_table(real, 'account_id', 'string')['account_id'].tolist() == ['001', 'NA']
+    assert retail.read_evaluation_table(generated, 'entity', 'string')['entity'].tolist() == ['001', 'NA']
+
+
+def test_generation_artifact_links_and_legacy_status(tmp_path):
+    bank = tmp_path / 'data.pt'
+    bank.write_bytes(b'prepared bank')
+    preprocessor, parents = {'kind': 'example'}, [1, 2]
+    checkpoint = {'identity': {'input_sha256': {str(bank): artifact.sha256(bank)}}}
+    legacy = retail.validate_generation_inputs(bank, checkpoint, preprocessor, parents)
+    assert legacy == {'checkpoint_bank_verified': True, 'bank_preprocessor_verified': False,
+                      'bank_parents_verified': False}
+    artifact.write_json(tmp_path / 'manifest.json', {'preprocessor_hash': artifact.json_digest(preprocessor),
+                                                      'parent_hash': artifact.json_digest(parents)})
+    checked = retail.validate_generation_inputs(bank, checkpoint, preprocessor, parents)
+    assert all(checked.values())
+    with pytest.raises(ValueError, match='training inputs'):
+        retail.validate_generation_inputs(bank, {'sources': {'old': 'bad'}}, preprocessor, parents)
+    with pytest.raises(ValueError, match='preprocessor_hash'):
+        retail.validate_generation_inputs(bank, checkpoint, {'kind': 'other'}, parents)
+    with pytest.raises(ValueError, match='parent_hash'):
+        retail.validate_generation_inputs(bank, checkpoint, preprocessor, [2, 1])
 
 
 @pytest.fixture

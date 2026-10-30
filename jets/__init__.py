@@ -1,5 +1,8 @@
 """JETS: joint-embedding temporal sequence generation."""
-from .model import JETSGenerator
-from .teachers import TimeTeacher, FeatureTeacher
+from .models import JETSGenerator
+from .encoders import TimeTargetEncoder, FeatureTargetEncoder
 
-__all__ = ["JETSGenerator", "TimeTeacher", "FeatureTeacher"]
+TimeTeacher = TimeTargetEncoder
+FeatureTeacher = FeatureTargetEncoder
+
+__all__ = ["JETSGenerator", "TimeTargetEncoder", "FeatureTargetEncoder"]

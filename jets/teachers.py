@@ -1,5 +1,5 @@
-"""Future representation teachers used by JETS."""
-from .time_teacher import TimeTeacher
-from .feature_teacher import FeatureTeacher
+"""Backward-compatible aliases; use :mod:`jets.encoders` for new code."""
+from .encoders import TimeTargetEncoder as TimeTeacher
+from .encoders import FeatureTargetEncoder as FeatureTeacher
 
 __all__ = ["TimeTeacher", "FeatureTeacher"]

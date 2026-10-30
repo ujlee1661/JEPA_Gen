@@ -11,10 +11,10 @@ from __future__ import annotations
 import torch
 from torch import Tensor,nn
 
-from .teacher_distribution import DistributionTeacher
+from .distribution import DistributionTargetEncoder
 
 
-class FeatureTeacher(DistributionTeacher):
+class FeatureTargetEncoder(DistributionTargetEncoder):
     teacher_kind='feature_only_energy_given_true_future_time'
 
     def __init__(self,*args,**kwargs):
