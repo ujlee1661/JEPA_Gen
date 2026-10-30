@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from analysis.jets_multidata_report import SCORER_SHA256, aggregates, compare, run
+from analysis.jets_multidata_report import SCORER_SHA256, aggregates, compare, run, verify_jets_pipeline
 from analysis.collect_jets_cases import build
 from analysis.collect_tabargn_cases import build as build_baseline_cases
 
@@ -168,3 +168,54 @@ def test_baseline_receipt_checks_all_weights_but_does_not_claim_generation_link(
     weights.write_bytes(b'changed')
     with pytest.raises(ValueError,match='weight path or digest'):
         run(tmp_path/'data',source,tmp_path/'wrong.json',allow_partial=True)
+
+
+def test_jets_pipeline_checks_both_encoder_seeds_and_cache_links(tmp_path):
+    from experiments.data import sha256
+    root=tmp_path/'prepared';root.mkdir()
+    config={'training_seed':1,'generator_steps':20000,'batch_size':16}
+    cfg={'seed':1,'teacher_steps':5000,'teacher_batch_size':32}
+    source={'jets/model.py':'fixed'}; raw={'account.csv':'a','trans.csv':'b'}
+    paths={'config_snapshot':root/'config.snapshot.json', 'bank':root/'input/bank/data.pt',
+           'preprocessor':root/'input/prepared/preprocessor.json', 'parents':root/'input/prepared/parents.json',
+           'time_target_encoder':root/'target_encoders/time/final.pt', 'time_cache':root/'target_caches/time.pt',
+           'feature_target_encoder':root/'target_encoders/feature/final.pt', 'feature_cache':root/'target_caches/feature.pt',
+           'initial_generator':root/'initial_generator.pt'}
+    for name,path in paths.items():
+        path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_text(json.dumps(config) if name=='config_snapshot' else name)
+    artifact={name:{'path':str(path),'sha256':sha256(path)} for name,path in paths.items()}
+    pipe={'seed':1,'windows':4096,'target_config':cfg,'train_ids':None,'input_sha256':raw,
+          'config_sha256':artifact['config_snapshot']['sha256'],'source_sha256':source}
+    (root/'pipeline.json').write_text(json.dumps(pipe))
+    (root/'complete.json').write_text(json.dumps({'artifacts':artifact,'target_steps':5000,
+        'exploratory_budget':False,'generation_future_target_inputs':False}))
+    train={'config':config,'input_sha256':{str(paths[name].resolve()): artifact[name]['sha256'] for name in
+        ('config_snapshot','bank','time_target_encoder','time_cache','feature_target_encoder','feature_cache','initial_generator')},
+        'source_sha256':source,'feature_weight':1.,'stochastic_condition':False,'native_future_teacher_inputs':False}
+    for family in ('time','feature'):
+        checkpoint=artifact[family+'_target_encoder']['sha256']; cache=artifact[family+'_cache']['sha256']; bank=artifact['bank']['sha256']
+        (root/'target_encoders'/family/'manifest.json').write_text(json.dumps({'family':family,'data_sha256':bank,
+            'config':cfg,'source_sha256':source}))
+        (root/'target_encoders'/family/'complete.json').write_text(json.dumps({'family':family,'updates':5000,
+            'data_sha256':bank,'checkpoint_sha256':checkpoint,'target_encoder_frozen':True,'calibration_scope':'training windows only'}))
+        (root/'target_caches'/f'{family}.json').write_text(json.dumps({'data_sha256':bank,
+            'teacher_checkpoint_sha256':checkpoint,'cache_sha256':cache,'windows':4096,'rows':5000,
+            'true_future_input_to_generator':False}))
+    evidence=verify_jets_pipeline(root,1,raw,train)
+    assert len(evidence)==17
+    bad=json.loads((root/'target_encoders/feature/manifest.json').read_text());bad['config']['seed']=2
+    (root/'target_encoders/feature/manifest.json').write_text(json.dumps(bad))
+    with pytest.raises(ValueError,match='target encoder identity'):
+        verify_jets_pipeline(root,1,raw,train)
+
+
+def test_one_training_seed_cannot_mix_checkpoint_hashes():
+    rows=[]
+    for gen,digest in [(1,'a'),(2,'b')]:
+        rows.append({'dataset':'dataset','model':'JETS','training_seed':1,'generation_seed':gen,
+            'count_source':'generated','training_checkpoint_sha256':digest,'metrics':None,
+            'distribution':{'events':1,'count_ks_all_parents':0.,'internal_gap_ks':0.,
+                            'active_span_ks':0.,'numeric':{},'categorical':{}}})
+    with pytest.raises(ValueError,match='same checkpoint'):
+        aggregates(rows,[1],[1,2])

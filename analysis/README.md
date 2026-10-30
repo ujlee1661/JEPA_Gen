@@ -24,6 +24,13 @@ receipts before a row is considered available; child digest and seed are checked
 Each JETS row also links the training checkpoint, completion receipt and manifest,
 checking checkpoint digest, update count, training seed and generation checkpoint.
 Coverage completion and verified training provenance are reported separately.
+For JETS the pipeline receipt additionally verifies the original input hashes,
+4096 windows, snapshot seed and budgets, and both target encoder manifests,
+training completion, training-only calibration, model and suffix-cache SHA chain.
+The generator manifest must record those exact artifacts, the feature prediction
+loss ON, deterministic conditioning, and no actual-future generation inputs.
+Within each training seed, all three generation receipts must name the same
+generator checkpoint. A missing or mismatched link is not a verified result.
 Each report path must be new; the source tables, receipts and generated outputs
 are not modified. The report records input hashes.
 

@@ -174,6 +174,99 @@ def scalar_metrics(row):
     return result
 
 
+def verify_jets_pipeline(root, seed, reference_hashes, training_manifest):
+    """Verify the two seed-specific target encoders and their cache chain.
+
+    Checks only recorded files and receipts, not their claimed scientific
+    validity. Paths in the preparation receipt must stay inside its namespace.
+    Returns hashes for a final before/after immutability check.
+    """
+    root = Path(root).resolve()
+    protected: dict[str, str] = {}
+
+    def load(path):
+        path = Path(path).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise FileNotFoundError(f'Missing or external pipeline receipt: {path}')
+        digest = sha256(path)
+        value = json.loads(path.read_text(encoding='utf-8'))
+        protected[str(path)] = digest
+        return value
+
+    pipeline = load(root / 'pipeline.json')
+    complete = load(root / 'complete.json')
+    if (str(pipeline.get('seed')) != str(seed) or pipeline.get('windows') != 4096
+            or pipeline.get('target_config', {}).get('seed') != int(seed)
+            or pipeline.get('target_config', {}).get('teacher_steps') != 5000
+            or pipeline.get('target_config', {}).get('teacher_batch_size') != 32
+            or pipeline.get('train_ids') is not None):
+        raise ValueError('Pipeline seed, population, windows or target budget differs')
+    if (pipeline.get('input_sha256') != reference_hashes or complete.get('target_steps') != 5000
+            or complete.get('exploratory_budget') is not False
+            or complete.get('generation_future_target_inputs') is not False):
+        raise ValueError('Pipeline input identity or completed scope differs')
+
+    expected = {'config_snapshot': root/'config.snapshot.json', 'bank': root/'input/bank/data.pt',
+                'preprocessor': root/'input/prepared/preprocessor.json', 'parents': root/'input/prepared/parents.json',
+                'time_target_encoder': root/'target_encoders/time/final.pt', 'time_cache': root/'target_caches/time.pt',
+                'feature_target_encoder': root/'target_encoders/feature/final.pt', 'feature_cache': root/'target_caches/feature.pt',
+                'initial_generator': root/'initial_generator.pt'}
+    artifacts = complete.get('artifacts') or {}
+    if set(artifacts) != set(expected):
+        raise ValueError('Pipeline artifact receipt is incomplete')
+    for name, path in expected.items():
+        path = path.resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise FileNotFoundError(f'Pipeline artifact missing: {path}')
+        entry = artifacts[name]
+        if Path(entry['path']).resolve() != path or sha256(path) != entry['sha256']:
+            raise ValueError(f'Pipeline artifact path or digest differs: {name}')
+        protected[str(path)] = entry['sha256']
+    config = load(expected['config_snapshot'])
+    if (sha256(expected['config_snapshot']) != pipeline.get('config_sha256')
+            or config.get('training_seed') != int(seed)
+            or config.get('generator_steps') != 20000 or config.get('batch_size') != 16):
+        raise ValueError('Config snapshot seed or generator budget differs')
+    if (training_manifest.get('config') != config or training_manifest.get('stochastic_condition') is not False
+            or training_manifest.get('feature_weight') != 1.0
+            or training_manifest.get('native_future_teacher_inputs') is not False
+            or training_manifest.get('source_sha256') != pipeline.get('source_sha256')):
+        raise ValueError('Generator manifest does not match deterministic pipeline setup')
+    training_hashes = training_manifest.get('input_sha256') or {}
+    for name in ('config_snapshot','bank','time_target_encoder','time_cache',
+                 'feature_target_encoder','feature_cache','initial_generator'):
+        path, digest = expected[name].resolve(), artifacts[name]['sha256']
+        if training_hashes.get(str(path)) != digest:
+            raise ValueError(f'Generator did not record pipeline input: {name}')
+    bank_digest = artifacts['bank']['sha256']
+    for family in ('time', 'feature'):
+        enc_manifest = load(root / 'target_encoders' / family / 'manifest.json')
+        enc_complete = load(root / 'target_encoders' / family / 'complete.json')
+        cache_receipt = load(root / 'target_caches' / f'{family}.json')
+        encoder_digest = artifacts[f'{family}_target_encoder']['sha256']
+        cache_digest = artifacts[f'{family}_cache']['sha256']
+        sources = enc_manifest.get('source_sha256') or {}
+        if (enc_manifest.get('family') != family or enc_manifest.get('data_sha256') != bank_digest
+                or enc_manifest.get('config') != pipeline.get('target_config')
+                or not sources or any(pipeline['source_sha256'].get(k) != v for k, v in sources.items())):
+            raise ValueError(f'{family} target encoder identity differs')
+        if (enc_complete.get('family') != family or enc_complete.get('updates') != 5000
+                or enc_complete.get('data_sha256') != bank_digest
+                or enc_complete.get('checkpoint_sha256') != encoder_digest
+                or enc_complete.get('target_encoder_frozen') is not True
+                or enc_complete.get('calibration_scope') != 'training windows only'):
+            raise ValueError(f'{family} target encoder completion differs')
+        if (cache_receipt.get('data_sha256') != bank_digest
+                or cache_receipt.get('teacher_checkpoint_sha256') != encoder_digest
+                or cache_receipt.get('cache_sha256') != cache_digest
+                or cache_receipt.get('windows') != 4096
+                or not isinstance(cache_receipt.get('rows'), int)
+                or cache_receipt['rows'] < 4096
+                or cache_receipt.get('true_future_input_to_generator') is not False):
+            raise ValueError(f'{family} suffix cache receipt differs')
+    return protected
+
+
 def aggregates(rows, expected_train_seeds, expected_generation_seeds):
     """Generation replicates are averaged within each independent training run."""
     by_group: dict[tuple[str, str, str], list[dict]] = {}
@@ -190,9 +283,13 @@ def aggregates(rows, expected_train_seeds, expected_generation_seeds):
                   'complete_generations': set(map(str, seeds)) == set(map(str, expected_generation_seeds)),
                   'training_provenance_verified': all(v.get('training_provenance_verified', False) for v in values),
                   'generation_checkpoint_link_verified': all(v.get('generation_checkpoint_link_verified', False) for v in values),
+                  'target_pipeline_provenance_verified': all(v.get('pipeline_provenance_verified', False) for v in values),
                   'complete_scores': all(isinstance(v.get('metrics'), dict) and
                       all(isinstance(v['metrics'].get(name), (int, float)) and
                           np.isfinite(v['metrics'][name]) for name in SCORE_NAMES) for v in values)}
+        checkpoints = {v['training_checkpoint_sha256'] for v in values if v.get('training_checkpoint_sha256')}
+        if len(checkpoints) > 1:
+            raise ValueError('One training seed must use the same checkpoint across generations')
         flattened = [scalar_metrics(value) for value in values]
         for metric in sorted(set().union(*(x.keys() for x in flattened))):
             selected = [x[metric] for x in flattened if x.get(metric) is not None]
@@ -209,6 +306,7 @@ def aggregates(rows, expected_train_seeds, expected_generation_seeds):
                    v['complete_generations'] and v['complete_scores'] for v in values),
                'independent_training_receipts_verified': all(v['training_provenance_verified'] for v in values),
                'generation_checkpoint_links_verified': all(v['generation_checkpoint_link_verified'] for v in values),
+               'target_pipeline_receipts_verified': all(v['target_pipeline_provenance_verified'] for v in values),
                'interpretation': 'within-training generation means, followed by statistics across independent training runs'}
         keys = sorted({key for value in values for key in value if key.endswith('_mean')})
         for key in keys:
@@ -229,6 +327,8 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
     source_files = {str(reference_root / d / 'raw' / n): sha256(reference_root / d / 'raw' / n)
                     for d in datasets for n in ('account.csv', 'trans.csv')}
     rows, pending = [], []
+    validated_pipelines: dict[tuple[str, str, str], dict[str, str]] = {}
+    protected_pipeline_files: dict[str, str] = {}
     for case in payload['samples']:
         required = ('dataset', 'model', 'training_seed', 'generation_seed', 'child', 'count_source')
         if any(name not in case for name in required) or not str(case['count_source']).strip():
@@ -274,6 +374,7 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
         weights_digest = {}
         verified_weight_receipt = None
         generation_link_verified = False
+        training = None
         if checkpoint and training_receipt and training_manifest:
             trained = json.loads(training_receipt.read_text(encoding='utf-8'))
             training = json.loads(training_manifest.read_text(encoding='utf-8'))
@@ -330,6 +431,23 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
                 raise ValueError('Oracle timeline output is not a native generation')
         if case.get('require_weight_link') and not generation_link_verified:
             raise ValueError('Required generation-to-training checkpoint link is missing')
+        pipeline_verified = False
+        if case.get('require_pipeline_provenance'):
+            if not case.get('pipeline_root') or not isinstance(training, dict):
+                raise ValueError('JETS pipeline provenance requires a pipeline root and generator manifest')
+            pipeline_key = (str(Path(case['pipeline_root']).resolve()), str(case['training_seed']), dataset)
+            if pipeline_key not in validated_pipelines:
+                reference = {name: source_files[str(raw / name)] for name in ('account.csv', 'trans.csv')}
+                try:
+                    evidence = verify_jets_pipeline(pipeline_key[0], case['training_seed'], reference, training)
+                except FileNotFoundError as exc:
+                    if allow_partial:
+                        pending.append({**case, 'pending_reason': str(exc)})
+                        continue
+                    raise
+                validated_pipelines[pipeline_key] = evidence
+                protected_pipeline_files.update(evidence)
+            pipeline_verified = True
         value = compare(raw/'account.csv', raw/'trans.csv', child, schema['numeric'], schema['categorical'], counts,
                         parent_identity=case.get('parent_identity', 'reference'),
                         generated_parent_file=generated_parent_file,
@@ -372,11 +490,14 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
                      'training_weight_sha256': weights_digest,
                      'training_provenance_verified': bool((checkpoint and training_receipt and training_manifest) or training_evidence),
                      'generation_checkpoint_link_verified': generation_link_verified,
+                     'pipeline_provenance_verified': pipeline_verified,
                      'metrics_sha256': metric_digest,
                      'metric_link': score_link, 'metrics': score, 'distribution': value})
     train, overall = aggregates(rows, payload.get('expected_training_seeds', [1, 2, 3]),
                                 payload.get('expected_generation_seeds', [1, 2, 3]))
-    if sha256(cases_file) != case_manifest_digest or any(sha256(Path(p)) != h for p, h in source_files.items()):
+    if (sha256(cases_file) != case_manifest_digest
+            or any(sha256(Path(p)) != h for p, h in source_files.items())
+            or any(sha256(Path(p)) != h for p, h in protected_pipeline_files.items())):
         raise ValueError('The case manifest or original source data changed during reporting')
     result = {'scope': 'descriptive native paths; no generalization claim without an explicit held-out protocol',
               'source_case_manifest_sha256': case_manifest_digest, 'source_real_sha256': source_files,

@@ -25,7 +25,9 @@ def build(root):
                     'checkpoint': str(generator / 'final.pt'),
                     'training_receipt': str(generator / 'complete.json'),
                     'training_manifest': str(generator / 'manifest.json'),
-                    'expected_updates': 20000})
+                    'expected_updates': 20000,
+                    'pipeline_root': str(generator.parent),
+                    'require_pipeline_provenance': True})
     return {'schemas': DATASETS, 'expected_training_seeds': list(TRAIN_SEEDS),
             'expected_generation_seeds': list(GENERATION_SEEDS), 'samples': cases}
 
