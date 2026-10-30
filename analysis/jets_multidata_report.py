@@ -243,6 +243,7 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
         raw = reference_root / dataset / 'raw'
         counts = Path(case['counts']) if case.get('counts') else None
         generated_parent_file = Path(case['generated_parents']) if case.get('generated_parents') else None
+        original_child = Path(case['original_child']) if case.get('original_child') else None
         receipt_path = Path(case['receipt']) if case.get('receipt') else None
         training_fields = ('checkpoint', 'training_receipt', 'training_manifest')
         if any(case.get(name) for name in training_fields) and not all(case.get(name) for name in training_fields):
@@ -253,7 +254,7 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
         training_receipt = Path(case['training_receipt']) if case.get('training_receipt') else None
         training_manifest = Path(case['training_manifest']) if case.get('training_manifest') else None
         training_evidence = Path(case['training_evidence']) if case.get('training_evidence') else None
-        missing = next((path for path in (counts, generated_parent_file, receipt_path,
+        missing = next((path for path in (counts, generated_parent_file, original_child, receipt_path,
                                          checkpoint, training_receipt, training_manifest, training_evidence)
                         if path is not None and not path.is_file()), None)
         if missing is not None:
@@ -264,12 +265,15 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
         child_digest = sha256(child)
         counts_digest = sha256(counts) if counts else None
         parents_digest = sha256(generated_parent_file) if generated_parent_file else None
+        original_child_digest = sha256(original_child) if original_child else None
         receipt_digest = sha256(receipt_path) if receipt_path else None
         checkpoint_digest = sha256(checkpoint) if checkpoint else None
         train_receipt_digest = sha256(training_receipt) if training_receipt else None
         train_manifest_digest = sha256(training_manifest) if training_manifest else None
         train_evidence_digest = sha256(training_evidence) if training_evidence else None
         weights_digest = {}
+        verified_weight_receipt = None
+        generation_link_verified = False
         if checkpoint and training_receipt and training_manifest:
             trained = json.loads(training_receipt.read_text(encoding='utf-8'))
             training = json.loads(training_manifest.read_text(encoding='utf-8'))
@@ -291,6 +295,7 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
             weights = training.get('weights')
             if not isinstance(weights, dict) or not weights:
                 raise ValueError('Baseline training evidence must record model weight digests')
+            verified_weight_receipt = weights
             root = training_evidence.resolve().parent
             for relative, expected in weights.items():
                 path = (root / relative).resolve()
@@ -303,12 +308,28 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
                 raise ValueError('Generation receipt does not match generated child table')
             if generation.get('generation_seed') is not None and str(generation['generation_seed']) != str(case['generation_seed']):
                 raise ValueError('Generation receipt belongs to a different seed')
+            if generation.get('training_seed') is not None and str(generation['training_seed']) != str(case['training_seed']):
+                raise ValueError('Generation receipt belongs to a different training seed')
             if generation.get('counts_sha256') and generation['counts_sha256'] != counts_digest:
                 raise ValueError('Generation receipt does not match generated count table')
+            if original_child is not None and (not generation.get('bitwise_replay_of_original') or
+                    generation.get('original_sample_sha256') != original_child_digest or
+                    original_child_digest != child_digest):
+                raise ValueError('Verified replay does not match the original generated table')
             if checkpoint_digest and generation.get('checkpoint_sha256') != checkpoint_digest:
                 raise ValueError('Generation receipt does not match training checkpoint')
+            if checkpoint_digest:
+                generation_link_verified = True
+            if verified_weight_receipt is not None:
+                before, after = generation.get('checkpoint_before_sha256'), generation.get('checkpoint_sha256')
+                if before is not None or after is not None:
+                    if before != verified_weight_receipt or after != verified_weight_receipt:
+                        raise ValueError('Baseline generation checkpoint hashes do not match training weights')
+                    generation_link_verified = True
             if generation.get('count_or_face_or_teacher_oracle') is True:
                 raise ValueError('Oracle timeline output is not a native generation')
+        if case.get('require_weight_link') and not generation_link_verified:
+            raise ValueError('Required generation-to-training checkpoint link is missing')
         value = compare(raw/'account.csv', raw/'trans.csv', child, schema['numeric'], schema['categorical'], counts,
                         parent_identity=case.get('parent_identity', 'reference'),
                         generated_parent_file=generated_parent_file,
@@ -331,6 +352,7 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
             score_link = 'child digest verified' if receipt.get('child_sha256') else 'scorer verified; receipt has no direct child digest'
         if (sha256(child) != child_digest or (counts and sha256(counts) != counts_digest)
                 or (generated_parent_file and sha256(generated_parent_file) != parents_digest)
+                or (original_child and sha256(original_child) != original_child_digest)
                 or (receipt_path is not None and receipt_digest and sha256(receipt_path) != receipt_digest)
                 or (checkpoint is not None and checkpoint_digest and sha256(checkpoint) != checkpoint_digest)
                 or (training_receipt is not None and train_receipt_digest and sha256(training_receipt) != train_receipt_digest)
@@ -341,6 +363,7 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
             raise ValueError('A generated source changed while the report was being prepared')
         rows.append({**case, 'child_sha256': child_digest, 'counts_sha256': counts_digest,
                      'generated_parents_sha256': parents_digest,
+                     'original_child_sha256': original_child_digest,
                      'generation_receipt_sha256': receipt_digest,
                      'training_checkpoint_sha256': checkpoint_digest,
                      'training_receipt_sha256': train_receipt_digest,
@@ -348,7 +371,7 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
                      'training_evidence_sha256': train_evidence_digest,
                      'training_weight_sha256': weights_digest,
                      'training_provenance_verified': bool((checkpoint and training_receipt and training_manifest) or training_evidence),
-                     'generation_checkpoint_link_verified': bool(checkpoint_digest and receipt_path),
+                     'generation_checkpoint_link_verified': generation_link_verified,
                      'metrics_sha256': metric_digest,
                      'metric_link': score_link, 'metrics': score, 'distribution': value})
     train, overall = aggregates(rows, payload.get('expected_training_seeds', [1, 2, 3]),

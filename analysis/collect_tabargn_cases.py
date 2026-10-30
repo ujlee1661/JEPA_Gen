@@ -15,15 +15,18 @@ def build(root):
         for train_seed in TRAIN_SEEDS:
             training = root / 'tabularargn' / dataset / f'train_{train_seed}'
             for generation_seed in GENERATION_SEEDS:
-                directory = training / 'generated' / f'seed_{generation_seed}'
+                directory = training / 'verified_samples' / f'seed_{generation_seed}'
+                original = training / 'generated' / f'seed_{generation_seed}'
                 cases.append({'dataset': dataset, 'model': 'TabARGN', 'training_seed': train_seed,
                     'generation_seed': generation_seed, 'parent_identity': 'reference',
                     'count_source': 'generated N; fixed reference parent attributes',
-                    'child': str(directory / 'child.csv'), 'counts': str(directory / 'counts_native_tabularargn.csv'),
+                    'child': str(directory / 'child.csv'), 'counts': str(original / 'counts_native_tabularargn.csv'),
                     'counts_value_column': 'N', 'receipt': str(directory / 'complete.json'),
+                    'original_child': str(original / 'child.csv'),
                     'metrics': str(directory / 'complete.json'),
                     'training_evidence': str(training / 'training_complete.json'),
-                    'training_budget_field': 'max_epochs', 'expected_training_budget': 100})
+                    'training_budget_field': 'max_epochs', 'expected_training_budget': 100,
+                    'require_weight_link': True})
     return {'schemas': DATASETS, 'expected_training_seeds': list(TRAIN_SEEDS),
             'expected_generation_seeds': list(GENERATION_SEEDS), 'samples': cases}
 

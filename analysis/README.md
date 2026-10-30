@@ -50,6 +50,11 @@ For the supported TabARGN study layout, create planned cases with:
 python -m analysis.collect_tabargn_cases --study-root /path/to/baseline_study \
   --output /path/to/new_tabargn_cases.json
 ```
+
+These cases wait for `verified_samples`, then require a bitwise match with the
+original child table and equality of the before/after checkpoint hashes with
+the completed training receipt. The original count receipt is independently
+checked against the replayed rows. Missing verification is reported as pending.
 When present, counts must cover every reference parent and match the generated
 rows. A receipt lacking a child digest is explicitly marked as not directly
 linked; an incorrect evaluator digest is rejected. For models conditioning on
