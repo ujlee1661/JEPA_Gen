@@ -8,6 +8,7 @@ import pytest
 from analysis.jets_multidata_report import SCORER_SHA256, aggregates, compare, run, verify_jets_pipeline
 from analysis.collect_jets_cases import build
 from analysis.collect_tabargn_cases import build as build_baseline_cases
+from analysis.collect_clava_cases import build as build_clava_cases
 
 
 def test_jets_case_manifest_covers_training_and_generation_seeds(tmp_path):
@@ -20,6 +21,9 @@ def test_jets_case_manifest_covers_training_and_generation_seeds(tmp_path):
     baseline = build_baseline_cases(tmp_path)
     assert len(baseline['samples']) == 36
     assert all(case['counts_value_column'] == 'N' for case in baseline['samples'])
+    clava = build_clava_cases(tmp_path)
+    assert len(clava['samples']) == 36
+    assert all(case['parent_identity'] == 'generated' for case in clava['samples'])
 
 
 def test_native_count_gaps_and_mixed_column_distributions(tmp_path):
@@ -219,3 +223,74 @@ def test_one_training_seed_cannot_mix_checkpoint_hashes():
                             'active_span_ks':0.,'numeric':{},'categorical':{}}})
     with pytest.raises(ValueError,match='same checkpoint'):
         aggregates(rows,[1],[1,2])
+
+
+def test_synthetic_parent_baseline_training_receipt_link_is_not_weight_attestation(tmp_path):
+    from experiments.data import sha256
+    raw=tmp_path/'data'/'dataset'/'raw';raw.mkdir(parents=True)
+    pd.DataFrame({'account_id':[1]}).to_csv(raw/'account.csv',index=False)
+    pd.DataFrame({'account_id':[1],'t_offset':[1.],'x':[2.]}).to_csv(raw/'trans.csv',index=False)
+    child=tmp_path/'child.csv';pd.DataFrame({'entity':['x'],'t_offset':[1.],'x':[2.]}).to_csv(child,index=False)
+    parent=tmp_path/'parent.csv';pd.DataFrame({'entity':['x','y']}).to_csv(parent,index=False)
+    counts=tmp_path/'counts.csv';pd.DataFrame({'entity':['x','y'],'count':[1,0]}).to_csv(counts,index=False)
+    weights=tmp_path/'model.pkl';weights.write_bytes(b'model')
+    train=tmp_path/'training_complete.json';train.write_text(json.dumps({'training_seed':1,
+        'model_sha256':{str(weights):sha256(weights)},'budgets':{'steps':20000}}))
+    receipt=tmp_path/'generation.json';receipt.write_text(json.dumps({'child_sha256':sha256(child),
+        'parent_sha256':sha256(parent),'counts_sha256':sha256(counts),'training_receipt_sha256':sha256(train),
+        'training_seed':1,'generation_seed':1}))
+    case={'dataset':'dataset','model':'ClavaDDPM','training_seed':1,'generation_seed':1,
+        'count_source':'generated','child':str(child),'generated_parents':str(parent),'generated_parent_column':'entity',
+        'parent_identity':'generated','counts':str(counts),'receipt':str(receipt),'training_evidence':str(train),
+        'training_evidence_profile':'clavaddpm','training_budget_field':'budgets','expected_training_budget':{'steps':20000}}
+    source=tmp_path/'cases.json';source.write_text(json.dumps({'schemas':{'dataset':{'numeric':['x'],'categorical':[]}},'samples':[case]}))
+    result=run(tmp_path/'data',source,tmp_path/'result.json',allow_partial=True)['per_generation'][0]
+    assert result['training_provenance_verified']
+    assert not result['training_exit_code_verified']
+    assert result['generation_training_receipt_link_verified']
+    assert not result['generation_checkpoint_link_verified']
+    parent.write_text('entity\nx\nz\n')
+    with pytest.raises(ValueError,match='parent table'):
+        run(tmp_path/'data',source,tmp_path/'bad.json',allow_partial=True)
+
+
+def test_remaining_baseline_checks_source_inputs_checkpoint_and_generation(tmp_path):
+    from experiments.data import sha256
+    raw=tmp_path/'data'/'dataset'/'raw'; raw.mkdir(parents=True)
+    pd.DataFrame({'account_id':[1]}).to_csv(raw/'account.csv',index=False)
+    pd.DataFrame({'account_id':[1],'t_offset':[1.],'x':[2.]}).to_csv(raw/'trans.csv',index=False)
+    jobdir=tmp_path/'job'; sandbox=jobdir/'sandbox'
+    sandbox_raw=sandbox/'data'/'dataset'/'raw'; sandbox_raw.mkdir(parents=True)
+    for name in ('account.csv','trans.csv'):
+        (sandbox_raw/name).write_bytes((raw/name).read_bytes())
+    ref=tmp_path/'reference'; ref.mkdir()
+    (ref/'model.py').write_text('model')
+    sandbox_source=sandbox/'baselines'/'remaining'; sandbox_source.mkdir(parents=True)
+    (sandbox_source/'model.py').write_text('model')
+    drivers=sandbox/'drivers'; drivers.mkdir()
+    (drivers/'driver.py').write_text('driver')
+    weight=sandbox/'weight.pt'; weight.write_bytes(b'weights')
+    weights={'weight.pt':sha256(weight)}
+    job=jobdir/'job.json'; job.write_text(json.dumps({'family':'remaining','dataset':'dataset',
+        'training_seed':1,'generation_seeds':[1,2,3], 'training_budget':'full', 'count_regime':'generated',
+        'driver_sha256':{'driver.py':sha256(drivers/'driver.py')},
+        'source_files':{'model.py':sha256(ref/'model.py')},
+        'input_sha256':{name:sha256(raw/name) for name in ('account.csv','trans.csv')}}))
+    train=jobdir/'train_complete.json'; train.write_text(json.dumps({'training_seed':1,'budget':100,
+        'checkpoints':weights}))
+    gen=jobdir/'generation_1';gen.mkdir()
+    child=gen/'child.csv';pd.DataFrame({'entity':[1],'t_offset':[1.],'x':[2.]}).to_csv(child,index=False)
+    receipt=gen/'generation.json';receipt.write_text(json.dumps({'training_seed':1,'generation_seed':1,
+        'checkpoint_sha256':weights,'count_regime':'generated', 'artifacts':{'child.csv':sha256(child)}}))
+    case={'dataset':'dataset','model':'remaining','training_seed':1,'generation_seed':1,
+        'count_source':'generated','child':str(child),'receipt':str(receipt),'training_evidence':str(train),
+        'training_evidence_profile':'remaining','training_budget_field':'budget','expected_training_budget':100,
+        'expected_job_budget':'full','job':str(job),'checkpoint_root':str(sandbox),
+        'reference_baseline_root':str(ref),'expected_count_regime':'generated','require_weight_link':True}
+    cases=tmp_path/'cases.json';cases.write_text(json.dumps({'schemas':{'dataset':{'numeric':['x'],'categorical':[]}},'samples':[case]}))
+    row=run(tmp_path/'data',cases,tmp_path/'ok.json',allow_partial=True)['per_generation'][0]
+    assert row['training_provenance_verified'] and row['generation_checkpoint_link_verified']
+    assert not row['training_exit_code_verified']
+    (sandbox_source/'model.py').write_text('tampered')
+    with pytest.raises(ValueError,match='source or input digest'):
+        run(tmp_path/'data',cases,tmp_path/'bad.json',allow_partial=True)

@@ -62,6 +62,19 @@ These cases wait for `verified_samples`, then require a bitwise match with the
 original child table and equality of the before/after checkpoint hashes with
 the completed training receipt. The original count receipt is independently
 checked against the replayed rows. Missing verification is reported as pending.
+
+ClavaDDPM has synthetic parents and a different completion-receipt format:
+
+```bash
+python -m analysis.collect_clava_cases --study-root /path/to/baseline_study \
+  --output /path/to/new_clava_cases.json
+```
+
+For ClavaDDPM, the reporter checks generated parent/child/count hashes, the
+link to the training receipt and the recorded model-file hashes. Its current
+generation receipt does not include direct before/after model hashes, and its
+training completion receipt has no explicit exit-code field; both remain
+separately marked unverified rather than inferred.
 When present, counts must cover every reference parent and match the generated
 rows. A receipt lacking a child digest is explicitly marked as not directly
 linked; an incorrect evaluator digest is rejected. For models conditioning on
@@ -84,3 +97,16 @@ total variation and missing fractions. It does not infer whether a `log_`
 column is monetary; for example, `log_page` describes pages rather than money.
 Pooled marginal agreement does not prove customer-level or time-feature
 dependence. Full-population fidelity is not held-out generalization.
+# Remaining-baseline receipts
+
+For RGCLD or RelDiff, set `training_evidence_profile` to `remaining`, point
+`training_evidence` and `receipt` at the original training and generation
+receipts, and set `job`, `checkpoint_root` (the job's sandbox), and
+`reference_baseline_root` (the corresponding reference baseline directory).
+Set `training_budget_field`, `expected_training_budget`, and
+`expected_job_budget` to the actual intended budgets, `expected_count_regime`
+to the generation receipt's documented count regime, and require the weight
+link. The reporter checks the recorded checkpoint map, original and sandbox
+source and inputs, seeds, and generated artifact digests. A checkpoint link
+established by the generation receipt does not itself prove a separate
+before-and-after checkpoint measurement; missing exit codes remain unverified.

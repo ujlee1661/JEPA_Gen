@@ -354,8 +354,9 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
         training_receipt = Path(case['training_receipt']) if case.get('training_receipt') else None
         training_manifest = Path(case['training_manifest']) if case.get('training_manifest') else None
         training_evidence = Path(case['training_evidence']) if case.get('training_evidence') else None
+        job_path = Path(case['job']) if case.get('job') else None
         missing = next((path for path in (counts, generated_parent_file, original_child, receipt_path,
-                                         checkpoint, training_receipt, training_manifest, training_evidence)
+                                         checkpoint, training_receipt, training_manifest, training_evidence, job_path)
                         if path is not None and not path.is_file()), None)
         if missing is not None:
             if allow_partial:
@@ -371,9 +372,12 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
         train_receipt_digest = sha256(training_receipt) if training_receipt else None
         train_manifest_digest = sha256(training_manifest) if training_manifest else None
         train_evidence_digest = sha256(training_evidence) if training_evidence else None
+        job_digest = sha256(job_path) if job_path else None
         weights_digest = {}
         verified_weight_receipt = None
         generation_link_verified = False
+        generation_receipt_link_verified = False
+        training_exit_code_verified = False
         training = None
         if checkpoint and training_receipt and training_manifest:
             trained = json.loads(training_receipt.read_text(encoding='utf-8'))
@@ -388,16 +392,46 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
             training = json.loads(training_evidence.read_text(encoding='utf-8'))
             if str(training.get('training_seed')) != str(case['training_seed']):
                 raise ValueError('Baseline training evidence belongs to a different training seed')
-            if training.get('training_exit_code') != 0:
+            profile = case.get('training_evidence_profile', 'tabularargn')
+            if profile not in ('tabularargn', 'clavaddpm', 'remaining'):
+                raise ValueError('Unsupported baseline training evidence profile')
+            if training.get('training_exit_code') is not None and training['training_exit_code'] != 0:
                 raise ValueError('Baseline training did not complete successfully')
+            if profile == 'tabularargn' and training.get('training_exit_code') != 0:
+                raise ValueError('TabARGN training receipt must record a successful exit')
+            training_exit_code_verified = training.get('training_exit_code') == 0
             budget_field = case.get('training_budget_field')
             if budget_field and training.get(budget_field) != case.get('expected_training_budget'):
                 raise ValueError('Baseline training evidence does not match the declared budget')
-            weights = training.get('weights')
+            weights = training.get('weights') if profile == 'tabularargn' else training.get('checkpoints' if profile == 'remaining' else 'model_sha256')
             if not isinstance(weights, dict) or not weights:
                 raise ValueError('Baseline training evidence must record model weight digests')
             verified_weight_receipt = weights
-            root = training_evidence.resolve().parent
+            root = Path(case['checkpoint_root']).resolve() if profile == 'remaining' else training_evidence.resolve().parent
+            if profile == 'remaining':
+                if not job_path or not case.get('reference_baseline_root') or not budget_field:
+                    raise ValueError('Remaining baseline requires job, baseline source root and explicit budget')
+                job = json.loads(job_path.read_text(encoding='utf-8'))
+                if (job.get('family') != case['model'] or job.get('dataset') != dataset
+                        or str(job.get('training_seed')) != str(case['training_seed'])
+                        or case['generation_seed'] not in job.get('generation_seeds', [])
+                        or job.get('count_regime') != case.get('expected_count_regime')
+                        or job.get('training_budget') != case.get('expected_job_budget')):
+                    raise ValueError('Remaining baseline job metadata mismatch')
+                sources, inputs, drivers = job.get('source_files'), job.get('input_sha256'), job.get('driver_sha256')
+                if (not isinstance(sources, dict) or not sources or not isinstance(drivers, dict) or not drivers
+                        or not isinstance(inputs, dict) or set(inputs) != {'account.csv', 'trans.csv'}):
+                    raise ValueError('Remaining baseline job requires source and input digests')
+                roots = [(Path(case['reference_baseline_root']).resolve(), sources),
+                         (root / 'baselines' / case['model'], sources),
+                         (root / 'drivers', drivers),
+                         (raw.resolve(), inputs), (root / 'data' / dataset / 'raw', inputs)]
+                for directory, entries in roots:
+                    for name, digest in entries.items():
+                        path = (directory / name).resolve()
+                        if not path.is_relative_to(directory.resolve()) or not path.is_file() or sha256(path) != digest:
+                            raise ValueError('Remaining baseline source or input digest mismatch')
+                        weights_digest[str(path)] = digest
             for relative, expected in weights.items():
                 path = (root / relative).resolve()
                 if not path.is_relative_to(root) or not path.is_file() or sha256(path) != expected:
@@ -405,7 +439,28 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
                 weights_digest[str(path)] = expected
         if receipt_path:
             generation = json.loads(receipt_path.read_text(encoding='utf-8'))
-            if generation.get('child_sha256') != child_digest:
+            is_remaining = bool(training_evidence and case.get('training_evidence_profile') == 'remaining')
+            if is_remaining:
+                artifacts = generation.get('artifacts')
+                if not case.get('expected_count_regime') or generation.get('count_regime') != case['expected_count_regime']:
+                    raise ValueError('Remaining baseline count regime missing or mismatched')
+                if not isinstance(artifacts, dict) or artifacts.get('child.csv') != child_digest:
+                    raise ValueError('Remaining baseline generation child digest mismatch')
+                if str(generation.get('training_seed')) != str(case['training_seed']) or str(generation.get('generation_seed')) != str(case['generation_seed']):
+                    raise ValueError('Remaining baseline generation seed missing or mismatched')
+                gen_root = receipt_path.resolve().parent
+                for name, digest in artifacts.items():
+                    path = (gen_root / name).resolve()
+                    if not path.is_relative_to(gen_root) or not path.is_file() or sha256(path) != digest:
+                        raise ValueError('Remaining baseline generation artifact mismatch')
+                    weights_digest[str(path)] = digest
+                if child.resolve() != (gen_root / 'child.csv').resolve():
+                    raise ValueError('Remaining baseline child path mismatch')
+                if counts and artifacts.get('counts.csv') != counts_digest:
+                    raise ValueError('Remaining baseline counts missing or mismatched')
+                if generated_parent_file and artifacts.get('parent.csv') != parents_digest:
+                    raise ValueError('Remaining baseline parents missing or mismatched')
+            elif generation.get('child_sha256') != child_digest:
                 raise ValueError('Generation receipt does not match generated child table')
             if generation.get('generation_seed') is not None and str(generation['generation_seed']) != str(case['generation_seed']):
                 raise ValueError('Generation receipt belongs to a different seed')
@@ -413,6 +468,10 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
                 raise ValueError('Generation receipt belongs to a different training seed')
             if generation.get('counts_sha256') and generation['counts_sha256'] != counts_digest:
                 raise ValueError('Generation receipt does not match generated count table')
+            if generation.get('parent_sha256') and generation['parent_sha256'] != parents_digest:
+                raise ValueError('Generation receipt does not match generated parent table')
+            if generation.get('dataset') is not None and generation['dataset'] != dataset:
+                raise ValueError('Generation receipt belongs to a different dataset')
             if original_child is not None and (not generation.get('bitwise_replay_of_original') or
                     generation.get('original_sample_sha256') != original_child_digest or
                     original_child_digest != child_digest):
@@ -423,10 +482,18 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
                 generation_link_verified = True
             if verified_weight_receipt is not None:
                 before, after = generation.get('checkpoint_before_sha256'), generation.get('checkpoint_sha256')
-                if before is not None or after is not None:
+                if is_remaining:
+                    if after != verified_weight_receipt:
+                        raise ValueError('Remaining baseline generation checkpoint map mismatch')
+                    generation_link_verified = True
+                elif before is not None or after is not None:
                     if before != verified_weight_receipt or after != verified_weight_receipt:
                         raise ValueError('Baseline generation checkpoint hashes do not match training weights')
                     generation_link_verified = True
+                if generation.get('training_receipt_sha256') is not None:
+                    if generation['training_receipt_sha256'] != train_evidence_digest:
+                        raise ValueError('Generation receipt does not match training receipt')
+                    generation_receipt_link_verified = True
             if generation.get('count_or_face_or_teacher_oracle') is True:
                 raise ValueError('Oracle timeline output is not a native generation')
         if case.get('require_weight_link') and not generation_link_verified:
@@ -476,6 +543,7 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
                 or (training_receipt is not None and train_receipt_digest and sha256(training_receipt) != train_receipt_digest)
                 or (training_manifest is not None and train_manifest_digest and sha256(training_manifest) != train_manifest_digest)
                 or (training_evidence is not None and train_evidence_digest and sha256(training_evidence) != train_evidence_digest)
+                or (job_path is not None and job_digest and sha256(job_path) != job_digest)
                 or any(sha256(Path(path)) != expected for path, expected in weights_digest.items())
                 or (metric_path is not None and metric_digest and sha256(metric_path) != metric_digest)):
             raise ValueError('A generated source changed while the report was being prepared')
@@ -489,6 +557,8 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
                      'training_evidence_sha256': train_evidence_digest,
                      'training_weight_sha256': weights_digest,
                      'training_provenance_verified': bool((checkpoint and training_receipt and training_manifest) or training_evidence),
+                     'training_exit_code_verified': training_exit_code_verified if training_evidence else None,
+                     'generation_training_receipt_link_verified': generation_receipt_link_verified,
                      'generation_checkpoint_link_verified': generation_link_verified,
                      'pipeline_provenance_verified': pipeline_verified,
                      'metrics_sha256': metric_digest,
