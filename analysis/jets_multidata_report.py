@@ -41,7 +41,7 @@ def distance(a, b):
     return float(ks_2samp(a, b).statistic) if len(a) and len(b) else None
 
 
-def temporal(frame, id_column, parents, counts_path=None):
+def temporal(frame, id_column, parents, counts_path=None, counts_id_column='entity', counts_value_column='count'):
     if id_column not in frame or 't_offset' not in frame:
         raise ValueError('Native event table needs entity and t_offset columns')
     if not frame[id_column].isin(parents).all():
@@ -58,9 +58,11 @@ def temporal(frame, id_column, parents, counts_path=None):
     observed = ordered.groupby(id_column).size().reindex(parents, fill_value=0).to_numpy(int)
     if counts_path is not None:
         counts = pd.read_csv(counts_path)
-        if counts['entity'].duplicated().any() or set(counts['entity']) != set(parents):
-            raise ValueError('Count receipt does not cover the original parents exactly')
-        declared = counts.set_index('entity')['count'].reindex(parents).to_numpy(int)
+        if counts_id_column not in counts or counts[counts_id_column].duplicated().any() or set(counts[counts_id_column]) != set(parents):
+            raise ValueError('Count receipt does not cover the declared generated parents exactly')
+        if counts_value_column not in counts:
+            raise ValueError('Count receipt is missing the declared count column')
+        declared = counts.set_index(counts_id_column)[counts_value_column].reindex(parents).to_numpy(int)
         if not np.array_equal(observed, declared):
             raise ValueError('Count receipt differs from native events')
     return {'counts': observed, 'gaps': gaps, 'spans': spans}
@@ -82,14 +84,45 @@ def categorical_tv(real, generated):
     return float(.5 * (p.reindex(keys, fill_value=0) - q.reindex(keys, fill_value=0)).abs().sum())
 
 
-def compare(parent_file, real_file, child_file, numeric, categorical, counts_file=None):
+def compare(parent_file, real_file, child_file, numeric, categorical, counts_file=None, *,
+            parent_identity='reference', generated_parent_file=None,
+            generated_parent_column='account_id', counts_id_column='entity', counts_value_column='count'):
     parent = pd.read_csv(parent_file)
     real, child = pd.read_csv(real_file), pd.read_csv(child_file)
     if parent['account_id'].duplicated().any():
         raise ValueError('Original parent identifiers must be unique')
     parents = parent['account_id'].tolist()
-    reference, sample = temporal(real, 'account_id', parents), temporal(child, 'entity', parents, counts_file)
-    output = {'parents': len(parents), 'events': len(child), 'count_ks_all_parents': distance(reference['counts'], sample['counts']),
+    if parent_identity == 'reference':
+        if generated_parent_file is not None:
+            supplied = pd.read_csv(generated_parent_file)[generated_parent_column]
+            if supplied.duplicated().any() or set(supplied) != set(parents):
+                raise ValueError('Declared fixed parents do not match reference parents')
+        generated_parents, zero_count_known = parents, True
+    elif parent_identity == 'generated':
+        if generated_parent_file is not None:
+            supplied = pd.read_csv(generated_parent_file)[generated_parent_column]
+            if supplied.isna().any() or supplied.duplicated().any():
+                raise ValueError('Generated parent identifiers must be nonmissing and unique')
+            generated_parents, zero_count_known = supplied.tolist(), True
+        elif counts_file is not None:
+            supplied = pd.read_csv(counts_file)[counts_id_column]
+            if supplied.isna().any() or supplied.duplicated().any():
+                raise ValueError('Count receipt parent identifiers must be nonmissing and unique')
+            generated_parents, zero_count_known = supplied.tolist(), True
+        else:
+            # Child rows reveal only nonempty parents. There is no honest way to
+            # infer how many generated parents produced zero events.
+            generated_parents, zero_count_known = child['entity'].dropna().unique().tolist(), False
+    else:
+        raise ValueError('parent_identity must be reference or generated')
+    reference = temporal(real, 'account_id', parents)
+    sample = temporal(child, 'entity', generated_parents, counts_file, counts_id_column, counts_value_column)
+    output = {'parents': len(parents), 'reference_parents': len(parents), 'generated_parents_observed_or_declared': len(generated_parents),
+              'parent_identity': parent_identity, 'zero_event_parent_count_known': zero_count_known,
+              'count_scope': 'all declared parents' if zero_count_known else 'nonempty parents only; zero-event parents unknown',
+              'events': len(child),
+              'count_ks_all_parents': distance(reference['counts'], sample['counts']) if zero_count_known else None,
+              'count_ks_nonempty_parents': distance(reference['counts'][reference['counts'] > 0], sample['counts'][sample['counts'] > 0]),
               'internal_gap_ks': distance(reference['gaps'], sample['gaps']), 'active_span_ks': distance(reference['spans'], sample['spans']),
               'count_real': distribution(reference['counts']), 'count_generated': distribution(sample['counts']),
               'gap_real': distribution(reference['gaps']), 'gap_generated': distribution(sample['gaps']),
@@ -119,6 +152,8 @@ def scalar_metrics(row):
     """Select comparable scalar values without pooling event rows across seeds."""
     dist = row['distribution']
     result = {key: dist[key] for key in ('count_ks_all_parents', 'internal_gap_ks', 'active_span_ks', 'events')}
+    if 'count_ks_nonempty_parents' in dist:
+        result['count_ks_nonempty_parents'] = dist['count_ks_nonempty_parents']
     for kind in ('count_generated', 'gap_generated', 'span_generated'):
         if kind in dist:
             for metric in ('mean', 'std', 'p50', 'p95', 'p99', 'zero_fraction'):
@@ -153,6 +188,7 @@ def aggregates(rows, expected_train_seeds, expected_generation_seeds):
         record = {'dataset': dataset, 'model': model, 'training_seed': train_seed,
                   'generation_seeds': seeds, 'count_source': sorted(set(v['count_source'] for v in values)),
                   'complete_generations': set(map(str, seeds)) == set(map(str, expected_generation_seeds)),
+                  'training_provenance_verified': all(v.get('training_provenance_verified', False) for v in values),
                   'complete_scores': all(isinstance(v.get('metrics'), dict) and
                       all(isinstance(v['metrics'].get(name), (int, float)) and
                           np.isfinite(v['metrics'][name]) for name in SCORE_NAMES) for v in values)}
@@ -170,6 +206,7 @@ def aggregates(rows, expected_train_seeds, expected_generation_seeds):
         row = {'dataset': dataset, 'model': model, 'training_seeds': seeds,
                'complete': set(seeds) == set(map(str, expected_train_seeds)) and all(
                    v['complete_generations'] and v['complete_scores'] for v in values),
+               'independent_training_receipts_verified': all(v['training_provenance_verified'] for v in values),
                'interpretation': 'within-training generation means, followed by statistics across independent training runs'}
         keys = sorted({key for value in values for key in value if key.endswith('_mean')})
         for key in keys:
@@ -203,11 +240,56 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
         schema = payload['schemas'][dataset]
         raw = reference_root / dataset / 'raw'
         counts = Path(case['counts']) if case.get('counts') else None
-        if counts is not None and not counts.is_file():
-            raise FileNotFoundError(counts)
+        generated_parent_file = Path(case['generated_parents']) if case.get('generated_parents') else None
+        receipt_path = Path(case['receipt']) if case.get('receipt') else None
+        training_fields = ('checkpoint', 'training_receipt', 'training_manifest')
+        if any(case.get(name) for name in training_fields) and not all(case.get(name) for name in training_fields):
+            raise ValueError('Training provenance requires checkpoint, receipt and manifest together')
+        checkpoint = Path(case['checkpoint']) if case.get('checkpoint') else None
+        training_receipt = Path(case['training_receipt']) if case.get('training_receipt') else None
+        training_manifest = Path(case['training_manifest']) if case.get('training_manifest') else None
+        missing = next((path for path in (counts, generated_parent_file, receipt_path,
+                                         checkpoint, training_receipt, training_manifest)
+                        if path is not None and not path.is_file()), None)
+        if missing is not None:
+            if allow_partial:
+                pending.append({**case, 'pending_reason': f'required artifact unavailable: {missing}'})
+                continue
+            raise FileNotFoundError(missing)
         child_digest = sha256(child)
         counts_digest = sha256(counts) if counts else None
-        value = compare(raw/'account.csv', raw/'trans.csv', child, schema['numeric'], schema['categorical'], counts)
+        parents_digest = sha256(generated_parent_file) if generated_parent_file else None
+        receipt_digest = sha256(receipt_path) if receipt_path else None
+        checkpoint_digest = sha256(checkpoint) if checkpoint else None
+        train_receipt_digest = sha256(training_receipt) if training_receipt else None
+        train_manifest_digest = sha256(training_manifest) if training_manifest else None
+        if checkpoint and training_receipt and training_manifest:
+            trained = json.loads(training_receipt.read_text(encoding='utf-8'))
+            training = json.loads(training_manifest.read_text(encoding='utf-8'))
+            if trained.get('checkpoint_sha256') != checkpoint_digest:
+                raise ValueError('Training receipt does not match the checkpoint')
+            if str(training.get('config', {}).get('training_seed')) != str(case['training_seed']):
+                raise ValueError('Training manifest belongs to a different training seed')
+            if case.get('expected_updates') is not None and trained.get('updates') != case['expected_updates']:
+                raise ValueError('Training receipt does not match expected update count')
+        if receipt_path:
+            generation = json.loads(receipt_path.read_text(encoding='utf-8'))
+            if generation.get('child_sha256') != child_digest:
+                raise ValueError('Generation receipt does not match generated child table')
+            if generation.get('generation_seed') is not None and str(generation['generation_seed']) != str(case['generation_seed']):
+                raise ValueError('Generation receipt belongs to a different seed')
+            if generation.get('counts_sha256') and generation['counts_sha256'] != counts_digest:
+                raise ValueError('Generation receipt does not match generated count table')
+            if checkpoint_digest and generation.get('checkpoint_sha256') != checkpoint_digest:
+                raise ValueError('Generation receipt does not match training checkpoint')
+            if generation.get('count_or_face_or_teacher_oracle') is True:
+                raise ValueError('Oracle timeline output is not a native generation')
+        value = compare(raw/'account.csv', raw/'trans.csv', child, schema['numeric'], schema['categorical'], counts,
+                        parent_identity=case.get('parent_identity', 'reference'),
+                        generated_parent_file=generated_parent_file,
+                        generated_parent_column=case.get('generated_parent_column', 'account_id'),
+                        counts_id_column=case.get('counts_id_column', 'entity'),
+                        counts_value_column=case.get('counts_value_column', 'count'))
         metric_path = Path(case['metrics']) if case.get('metrics') else None
         if metric_path and not metric_path.is_file() and not allow_partial:
             raise FileNotFoundError(metric_path)
@@ -223,9 +305,20 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
             score = receipt.get('metrics')
             score_link = 'child digest verified' if receipt.get('child_sha256') else 'scorer verified; receipt has no direct child digest'
         if (sha256(child) != child_digest or (counts and sha256(counts) != counts_digest)
+                or (generated_parent_file and sha256(generated_parent_file) != parents_digest)
+                or (receipt_path is not None and receipt_digest and sha256(receipt_path) != receipt_digest)
+                or (checkpoint is not None and checkpoint_digest and sha256(checkpoint) != checkpoint_digest)
+                or (training_receipt is not None and train_receipt_digest and sha256(training_receipt) != train_receipt_digest)
+                or (training_manifest is not None and train_manifest_digest and sha256(training_manifest) != train_manifest_digest)
                 or (metric_path is not None and metric_digest and sha256(metric_path) != metric_digest)):
             raise ValueError('A generated source changed while the report was being prepared')
         rows.append({**case, 'child_sha256': child_digest, 'counts_sha256': counts_digest,
+                     'generated_parents_sha256': parents_digest,
+                     'generation_receipt_sha256': receipt_digest,
+                     'training_checkpoint_sha256': checkpoint_digest,
+                     'training_receipt_sha256': train_receipt_digest,
+                     'training_manifest_sha256': train_manifest_digest,
+                     'training_provenance_verified': bool(checkpoint and training_receipt and training_manifest),
                      'metrics_sha256': metric_digest,
                      'metric_link': score_link, 'metrics': score, 'distribution': value})
     train, overall = aggregates(rows, payload.get('expected_training_seeds', [1, 2, 3]),

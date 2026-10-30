@@ -19,8 +19,13 @@ python -m analysis.jets_multidata_report --reference-root /path/to/reference/dat
 ```
 
 `--allow-partial` records unavailable cases rather than silently counting them
-as completed. Each report path must be new; the source tables, receipts and
-generated outputs are not modified. The report records input hashes.
+as completed. JETS cases require the completed `generation.json` and `counts.csv`
+receipts before a row is considered available; child digest and seed are checked.
+Each JETS row also links the training checkpoint, completion receipt and manifest,
+checking checkpoint digest, update count, training seed and generation checkpoint.
+Coverage completion and verified training provenance are reported separately.
+Each report path must be new; the source tables, receipts and generated outputs
+are not modified. The report records input hashes.
 
 ## Other models
 
@@ -29,10 +34,25 @@ Add native paths to `samples` in the manifest, with explicit `dataset`, `model`,
 source must say whether N was generated or supplied: equal N is not evidence
 of free-count generation. `counts` and `metrics` paths are optional, though a
 complete five-score comparison requires pinned original evaluator receipts.
+Optional `checkpoint`, `training_receipt`, `training_manifest` must be supplied
+together to use the generic checkpoint/seed verification; otherwise the result
+is explicitly marked as having unverified training provenance. Other baseline
+receipt formats require separate verification and must not be represented as
+independently checked by this report.
 When present, counts must cover every reference parent and match the generated
 rows. A receipt lacking a child digest is explicitly marked as not directly
-linked; an incorrect evaluator digest is rejected. IDs must correspond to the
-reference population; this tool does not relabel or repair them.
+linked; an incorrect evaluator digest is rejected. For models conditioning on
+the fixed reference parents, set `parent_identity` to `reference` (the
+default), and ID membership is checked. For models that synthesize parents,
+set `parent_identity` to `generated` and provide `generated_parents` with its
+`generated_parent_column`, or provide a complete `counts` receipt: these IDs
+are compared as a separate population and are never mapped to real IDs. If
+neither generated parents nor a complete counts receipt is available, empty
+generated parents cannot be inferred; all-parent N KS is unavailable and only
+the explicitly labeled non-empty-parent N KS is reported.
+For a count file with non-default column names, set `counts_id_column` and
+`counts_value_column` explicitly (for example, `entity` and `N` for an original
+baseline count receipt).
 
 For each replicate, the report contains KS distances for N (including empty
 parents), internal event gaps, and non-empty active spans; source-scale

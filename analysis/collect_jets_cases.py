@@ -15,10 +15,17 @@ def build(root):
         for train_seed in TRAIN_SEEDS:
             for generation_seed in GENERATION_SEEDS:
                 directory = root / dataset / f'train_{train_seed}' / f'generation_{generation_seed}'
+                generator = root / dataset / f'train_{train_seed}' / 'prepared' / 'generator'
                 cases.append({'dataset': dataset, 'model': 'JETS', 'training_seed': train_seed,
                     'generation_seed': generation_seed, 'count_source': 'generated N and generated face',
+                    'parent_identity': 'reference',
                     'child': str(directory / 'child.csv'), 'counts': str(directory / 'counts.csv'),
-                    'metrics': str(directory / 'metrics.json')})
+                    'receipt': str(directory / 'generation.json'),
+                    'metrics': str(directory / 'metrics.json'),
+                    'checkpoint': str(generator / 'final.pt'),
+                    'training_receipt': str(generator / 'complete.json'),
+                    'training_manifest': str(generator / 'manifest.json'),
+                    'expected_updates': 20000})
     return {'schemas': DATASETS, 'expected_training_seeds': list(TRAIN_SEEDS),
             'expected_generation_seeds': list(GENERATION_SEEDS), 'samples': cases}
 

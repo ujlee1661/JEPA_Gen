@@ -34,6 +34,9 @@ def test_native_count_gaps_and_mixed_column_distributions(tmp_path):
     assert result['numeric']['log_amount']['expm1_generated']['mean'] == pytest.approx(14/3)
     assert result['numeric']['log_amount']['expm1_generated']['zero_fraction'] == pytest.approx(1/3)
     assert result['categorical']['cat_code']['observed_total_variation'] == pytest.approx(1/3)
+    pd.DataFrame({'entity': [1, 2, 3], 'N': [2, 0, 1]}).to_csv(counts, index=False)
+    assert compare(parent, real, child, ['log_amount'], ['cat_code'], counts,
+                   counts_value_column='N')['count_ks_all_parents'] == 0.
     pd.DataFrame({'entity': [1, 2, 3], 'count': [1, 0, 1]}).to_csv(counts, index=False)
     with pytest.raises(ValueError, match='differs'):
         compare(parent, real, child, ['log_amount'], ['cat_code'], counts)
@@ -44,7 +47,7 @@ def test_generation_replicates_are_nested_in_train_seed():
     for seed, vals in [(1, [1., 3., 5.]), (2, [3., 5., 7.]), (3, [5., 7., 9.])]:
         for gen, value in enumerate(vals, 1):
             rows.append({'dataset': 'sample', 'model': 'JETS', 'training_seed': seed,
-                'generation_seed': gen, 'count_source': 'generated',
+                'generation_seed': gen, 'count_source': 'generated', 'training_provenance_verified': True,
                 'metrics': {'ts': value, 'cs': value, 'sd': value, 'lg': value, 'joint_ff': value},
                 'distribution': {'events': 1, 'count_ks_all_parents': value,
                     'internal_gap_ks': value, 'active_span_ks': value,
@@ -56,6 +59,25 @@ def test_generation_replicates_are_nested_in_train_seed():
     assert overall[0]['ts_train_seed_sd'] == pytest.approx(2.)
     assert overall[0]['numeric.log_amount.expm1_generated.mean_mean'] == 5.
     assert overall[0]['numeric.log_amount.expm1_generated.mean_train_seed_sd'] == pytest.approx(2.)
+
+
+def test_generated_parent_population_is_not_forced_to_real_ids(tmp_path):
+    parent=tmp_path/'real_parents.csv'; real=tmp_path/'real.csv'; child=tmp_path/'generated.csv'
+    generated_parents=tmp_path/'generated_parents.csv'; counts=tmp_path/'counts.csv'
+    pd.DataFrame({'account_id':[1,2,3]}).to_csv(parent,index=False)
+    pd.DataFrame({'account_id':[1,1,2], 't_offset':[1.,2.,3.], 'x':[1.,2.,3.]}).to_csv(real,index=False)
+    pd.DataFrame({'entity':['x','x','y'], 't_offset':[1.,2.,3.], 'x':[1.,2.,3.]}).to_csv(child,index=False)
+    pd.DataFrame({'account_id':['x','y','z']}).to_csv(generated_parents,index=False)
+    pd.DataFrame({'entity':['x','y','z'], 'count':[2,1,0]}).to_csv(counts,index=False)
+    with pytest.raises(ValueError, match='identifiers do not match'):
+        compare(parent,real,child,['x'],[])
+    got=compare(parent,real,child,['x'],[],counts,parent_identity='generated',generated_parent_file=generated_parents)
+    assert got['zero_event_parent_count_known'] and got['count_ks_all_parents']==0.
+    via_counts=compare(parent,real,child,['x'],[],counts,parent_identity='generated')
+    assert via_counts['count_ks_all_parents']==0.
+    unknown=compare(parent,real,child,['x'],[],parent_identity='generated')
+    assert not unknown['zero_event_parent_count_known'] and unknown['count_ks_all_parents'] is None
+    assert unknown['count_ks_nonempty_parents']==0.
 
 
 def test_partial_outputs_and_original_metric_digest(tmp_path):
@@ -77,3 +99,46 @@ def test_partial_outputs_and_original_metric_digest(tmp_path):
     assert result['per_generation'][0]['metric_link'].startswith('scorer verified')
     with pytest.raises(FileExistsError):
         run(tmp_path/'data',source,tmp_path/'partial.json',allow_partial=True)
+
+
+def test_in_progress_generation_waits_for_verified_receipt(tmp_path):
+    raw=tmp_path/'data'/'dataset'/'raw';raw.mkdir(parents=True)
+    pd.DataFrame({'account_id':[1]}).to_csv(raw/'account.csv',index=False)
+    pd.DataFrame({'account_id':[1],'t_offset':[1.],'x':[2.]}).to_csv(raw/'trans.csv',index=False)
+    child=tmp_path/'child.csv';pd.DataFrame({'entity':[1],'t_offset':[1.],'x':[2.]}).to_csv(child,index=False)
+    counts=tmp_path/'counts.csv';receipt=tmp_path/'generation.json'
+    case={'dataset':'dataset','model':'JETS','training_seed':1,'generation_seed':1,
+          'count_source':'generated','child':str(child),'counts':str(counts),'receipt':str(receipt)}
+    source=tmp_path/'cases.json';source.write_text(json.dumps({'schemas':{'dataset':{'numeric':['x'],'categorical':[]}},'samples':[case]}))
+    result=run(tmp_path/'data',source,tmp_path/'waiting.json',allow_partial=True)
+    assert not result['per_generation'] and len(result['pending'])==1
+    pd.DataFrame({'entity':[1],'count':[1]}).to_csv(counts,index=False)
+    receipt.write_text(json.dumps({'child_sha256':'incorrect','generation_seed':1}))
+    with pytest.raises(ValueError, match='receipt does not match'):
+        run(tmp_path/'data',source,tmp_path/'bad.json',allow_partial=True)
+
+
+def test_training_provenance_checks_checkpoint_seed_and_budget(tmp_path):
+    from experiments.data import sha256
+    raw=tmp_path/'data'/'dataset'/'raw';raw.mkdir(parents=True)
+    pd.DataFrame({'account_id':[1]}).to_csv(raw/'account.csv',index=False)
+    pd.DataFrame({'account_id':[1],'t_offset':[1.],'x':[2.]}).to_csv(raw/'trans.csv',index=False)
+    child=tmp_path/'child.csv';pd.DataFrame({'entity':[1],'t_offset':[1.],'x':[2.]}).to_csv(child,index=False)
+    ckpt=tmp_path/'final.pt';ckpt.write_bytes(b'model')
+    train=tmp_path/'complete.json';train.write_text(json.dumps({'checkpoint_sha256':sha256(ckpt),'updates':20000}))
+    manifest=tmp_path/'manifest.json';manifest.write_text(json.dumps({'config':{'training_seed':2}}))
+    receipt=tmp_path/'generation.json';receipt.write_text(json.dumps({'child_sha256':sha256(child),
+        'checkpoint_sha256':sha256(ckpt),'generation_seed':1}))
+    case={'dataset':'dataset','model':'JETS','training_seed':1,'generation_seed':1,'count_source':'generated',
+          'child':str(child),'receipt':str(receipt),'checkpoint':str(ckpt),'training_receipt':str(train),
+          'training_manifest':str(manifest),'expected_updates':20000}
+    source=tmp_path/'cases.json';source.write_text(json.dumps({'schemas':{'dataset':{'numeric':['x'],'categorical':[]}},'samples':[case]}))
+    with pytest.raises(ValueError,match='different training seed'):
+        run(tmp_path/'data',source,tmp_path/'wrong.json',allow_partial=True)
+    manifest.write_text(json.dumps({'config':{'training_seed':1}}))
+    result=run(tmp_path/'data',source,tmp_path/'valid.json',allow_partial=True)
+    assert result['per_generation'][0]['training_provenance_verified']
+    assert result['per_generation'][0]['training_checkpoint_sha256']==sha256(ckpt)
+    train.write_text(json.dumps({'checkpoint_sha256':sha256(ckpt),'updates':10}))
+    with pytest.raises(ValueError,match='update count'):
+        run(tmp_path/'data',source,tmp_path/'budget.json',allow_partial=True)
