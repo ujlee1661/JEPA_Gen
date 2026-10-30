@@ -35,7 +35,7 @@ def build_model(data, config, device):
     model = JETSGenerator(state['token_dim'], data['attrs'].shape[1],
         state['mark_token_state']['observation_end'], time_scale=state['time_scale'],
         **config['model']).to(device)
-    model.stochastic_condition = True
+    model.stochastic_condition = False
     return model
 
 
@@ -105,7 +105,7 @@ def train(args):
     input_paths = (bank_path, args.config, args.time_cache, args.time_teacher, args.feature_cache, args.feature_teacher, args.initial)
     hashes = {str(path.resolve()): sha256(path) for path in input_paths}
     identity = {'config': config, 'input_sha256': hashes, 'source_sha256': source_hashes(), 'feature_weight': args.feature_weight,
-        'stochastic_condition': True, 'native_future_teacher_inputs': False,
+        'stochastic_condition': False, 'native_future_teacher_inputs': False,
         'scope': 'new JETS run with externally prepared windows and frozen teacher caches; not the original run receipt'}
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -172,7 +172,7 @@ def train(args):
     if source_hashes() != identity['source_sha256']:
         raise ValueError('JETS source changed during execution')
     atomic_torch_save({'model': model.state_dict(), 'config': config, 'step': config['generator_steps'],
-        'identity': identity, 'stochastic_condition': True}, out / 'final.pt')
+        'identity': identity, 'stochastic_condition': False}, out / 'final.pt')
     write_json(out / 'complete.json', {'updates': config['generator_steps'], 'checkpoint_sha256': sha256(out / 'final.pt')})
 
 
@@ -182,6 +182,8 @@ def generate(args):
     checkpoint = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     if 'model' not in checkpoint or 'config' not in checkpoint or int(checkpoint.get('step', 0)) < 1:
         raise ValueError('Generation requires a trained model checkpoint')
+    if checkpoint.get('stochastic_condition') is True or (checkpoint.get('identity') or {}).get('stochastic_condition') is True:
+        raise ValueError('Checkpoint was trained with stochastic feature conditioning; use a deterministic-trained checkpoint')
     config = checkpoint['config']
     model = build_model(data, config, args.device)
     model.load_state_dict(checkpoint['model'], strict=True)
@@ -242,7 +244,7 @@ def generate(args):
         'bank_sha256': sha256(bank_path), 'preprocessor_sha256': sha256(args.preprocessor),
         'parents_sha256': sha256(args.parents),
         'counts_sha256': sha256(out / 'counts.csv'), 'sample_steps': args.sample_steps,
-        'artifact_checks': artifact_checks,
+        'artifact_checks': artifact_checks, 'stochastic_condition': False,
         'count_or_face_or_teacher_oracle': False, 'scope': 'BOS generation; native count and face',
         'warning': 'External artifacts must be trusted; this new receipt is not a legacy experiment receipt'})
     print(f'Generated {len(frame)} events for {len(parents)} parents: {out}', flush=True)

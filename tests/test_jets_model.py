@@ -2,6 +2,7 @@
 import pytest
 import torch
 from jets.models import JETSGenerator
+from jets.models.predictive import PredictiveSequenceGenerator
 from jets.encoders import TimeTargetEncoder, FeatureTargetEncoder
 
 
@@ -34,6 +35,41 @@ def test_sampling_does_not_accept_real_future_codes_and_replays():
     assert torch.equal(x['tokens'], y['tokens'])
     assert torch.equal(x['count'], y['count'])
     assert bool(torch.isfinite(x['tokens']).all())
+
+
+def test_default_is_deterministic_without_extra_rng_draw():
+    m = model().eval()
+    assert not m.stochastic_condition
+    reference = PredictiveSequenceGenerator(5, 2, 10., code_dim=8, width=16, layers=1,
+                                            heads=2, hidden=16, components=2, diffusion_steps=10).eval()
+    reference.load_state_dict(m.state_dict(), strict=True)
+    b = batch()
+    with torch.no_grad():
+        torch.manual_seed(271)
+        actual = m.sample_paths(b['attrs'], b['anchor'], b['delta'], sample_steps=10)
+        actual_rng = torch.get_rng_state()
+        torch.manual_seed(271)
+        expected = reference.sample_paths(b['attrs'], b['anchor'], b['delta'], sample_steps=10)
+        expected_rng = torch.get_rng_state()
+    assert torch.equal(actual['tokens'], expected['tokens'])
+    assert torch.equal(actual['count'], expected['count'])
+    assert torch.equal(actual_rng, expected_rng)
+    assert m._condition_epsilon is None
+
+
+def test_deterministic_feature_prediction_is_trainable():
+    m = model()
+    b = batch()
+    targets = torch.randn(2, 4, 8)
+    noise = torch.randn_like(b['tokens'])
+    steps = torch.tensor([0, 9])
+    before = torch.get_rng_state()
+    loss, _ = m.loss(b, targets, targets[:, 0], 1., feature_teacher_codes=targets,
+                     feature_aux_weight=1., noise=noise, steps=steps)
+    assert torch.equal(before, torch.get_rng_state())
+    loss.backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all()
+               for p in m.feature_prediction.parameters())
 
 
 def test_disabled_feature_aux_ignores_teacher_target():

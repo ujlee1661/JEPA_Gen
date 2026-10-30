@@ -94,7 +94,7 @@ python -m experiments.retail train \
   --initial /path/to/generator_initial.pt --output /path/to/new_run --device cuda
 ```
 
-기본 설정은 feature 표현 예측 손실 ON입니다. `--feature-weight 0`은 같은 구조에서 그 손실만 제거하는 대조군입니다. `--steps`는 명시적으로 학습량을 바꾸는 기능이며, 줄인 예산의 실행을 원본 전체 학습 결과로 표시해서는 안 됩니다. 입력 자료 해시와 새 run의 정보는 출력 경로에 기록됩니다.
+기본 설정은 feature 표현 예측 손실 ON이며, 생성 조건에는 예측한 평균과 표준편차를 결정적으로 사용합니다. `--feature-weight 0`은 같은 구조에서 feature 예측 손실만 제거하는 대조군입니다. `--steps`는 명시적으로 학습량을 바꾸는 기능이며, 줄인 예산의 실행을 원본 전체 학습 결과로 표시해서는 안 됩니다. 입력 자료 해시와 새 run의 정보는 출력 경로에 기록됩니다.
 
 ### 자유 생성
 
@@ -125,7 +125,15 @@ python -m experiments.retail evaluate \
 python -m pytest -q tests/test_jets_model.py
 ```
 
-기존 실험 checkpoint와 준비된 자료를 별도로 제공한 환경에서 JETS 생성기·target encoder의 결과와 기존 결과가 일치하는지 검증했습니다. 원본 Retail 결과는 학습에 포함된 고객에 대한 평가이며, 학습 seed 1개와 생성 seed 3개의 결과입니다. 새로운 고객에 대한 일반화나 다중 학습 seed의 안정성을 의미하지 않습니다.
+기존 실험 checkpoint와 준비된 자료를 별도로 제공한 환경에서 호환 모드의 JETS 생성기·target encoder가 기존 결과와 일치하는지 검증했습니다. 현재 기본값은 결정적 feature 조건이며 과거 확률적 실험의 결과를 그대로 재현한다고 주장하지 않습니다. 기존 Retail 결과는 학습에 포함된 고객에 대한 평가이며, 학습 seed 1개와 생성 seed 3개의 결과입니다. 새로운 고객에 대한 일반화나 다중 학습 seed의 안정성을 의미하지 않습니다.
+
+네 개의 논문 입력 테이블을 학습 seed 1·2·3과 학습별 생성 seed 1·2·3으로 실행할 때는 다음 명령을 사용합니다. 원본 평가기를 별도로 제공해야 하며, 이 명령은 JETS만 실행합니다.
+
+```bash
+python -m experiments.multidata --raw-root /path/to/reference/data \
+  --scorer /path/to/reference/score.py --config configs/jets_retail.json \
+  --output /path/to/new_multidata_run --device cuda
+```
 
 ## 로컬 산출물
 

@@ -60,15 +60,15 @@ Decoder는 코드와 실제 미래 시간·N·face, 정적 속성·기간 및 �
 
 과거 이력은 history GRU가, 현재 denoising 단계의 noisy prefix는 별도의 context GRU가 처리한다. 입력 투영과 초기 상태도 context 경로에 포함된다. 시간 및 feature predictor는 각각 미래 표현의 평균과 표준편차를 낸다. 학습 시 이 분포와 고정된 target 표현 사이에 Gaussian NLL을 적용한다.
 
-현재 결합 설정에서 feature 조건은 아래와 같이 만든다.
+현재 기본 설정은 feature predictor가 출력한 평균과 표준편차를 표본화 없이 그대로 조건으로 사용한다.
 
 ```text
-z_feature = μ_feature + σ_feature ⊙ ε,  ε ~ N(0, I)
+feature condition = (μ_feature, σ_feature)
 ```
 
-하나의 생성 경로마다 독립적인 `ε`를 뽑고 해당 경로의 모든 prefix와 역확산 단계에서 공유한다. 이는 선택한 확률적 조건화 방식이다. 공유 잡음이 개체 고유 표현이나 장기 일관성을 보장하지 않으며, Gaussian 예측과 표본화만으로 불확실성의 보정이나 정확한 posterior를 주장할 수 없다.
+기본 학습·생성은 별도의 `ε`를 뽑거나 그 때문에 난수 상태를 소비하지 않는다. 이전 확률적 조건화는 체크포인트 호환과 별도 대조를 위해 명시적 선택지로 남아 있지만 현재 기본 모델이 아니다. Gaussian NLL만으로 예측 불확실성의 보정이나 정확한 posterior를 주장하지 않는다.
 
-Predictor의 시간 표현 평균·표준편차는 시간 조건 MLP로 전달된다. 시간 표현과 feature 표본·표준편차는 별도의 잔차 MLP에도 들어가고, 이 두 조건은 noisy 토큰 임베딩 및 정적 조건과 더해져 Transformer 입력을 이룬다. 잔차 MLP의 마지막 층은 0으로 초기화된다. Transformer는 시간과 feature를 함께 다루며 각 noise 단계에서 v-prediction을 출력한다.
+Predictor의 시간 표현 평균·표준편차는 시간 조건 MLP로 전달된다. 시간 표현과 feature 평균·표준편차는 별도의 잔차 MLP에도 들어가고, 이 두 조건은 noisy 토큰 임베딩 및 정적 조건과 더해져 Transformer 입력을 이룬다. 잔차 MLP의 마지막 층은 0으로 초기화된다. Transformer는 시간과 feature를 함께 다루며 각 noise 단계에서 v-prediction을 출력한다.
 
 Target 코드가 직접 diffusion 조건으로 들어가는 것은 아니다. Target 코드는 생성기 학습의 예측 목표로만 사용하며, 생성기 조건에는 predictor의 예측이 들어간다.
 
@@ -111,6 +111,6 @@ Feature 예측 손실을 끈 대조군도 feature 분기와 생성 손실은 유
 
 ## 실험 범위
 
-현재 기준 실험은 하나의 학습 seed, 고정된 최종 checkpoint, 세 생성 seed로 수행됐다. 수치형 변환과 target encoder 교정은 학습 구간에서 적합했다. 평가에 사용된 개체가 학습 모집단에 포함된 경우 해당 결과는 같은 모집단의 생성 적합도이며, 새로운 고객에 대한 일반화로 해석하지 않는다.
+이전 확률적 조건화 실험은 하나의 학습 seed, 고정된 최종 checkpoint, 세 생성 seed로 수행됐다. 현재 결정적 조건화의 독립 재학습 결과로 혼동하지 않는다. 수치형 변환과 target encoder 교정은 학습 구간에서 적합했다. 평가에 사용된 개체가 학습 모집단에 포함된 경우 해당 결과는 같은 모집단의 생성 적합도이며, 새로운 고객에 대한 일반화로 해석하지 않는다.
 
 코드와 실험 실행의 정확한 경로 및 준비물은 저장소의 README를 참고한다.

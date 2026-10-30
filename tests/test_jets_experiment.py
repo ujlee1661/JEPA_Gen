@@ -106,6 +106,8 @@ def test_two_step_interrupted_resume_matches_continuous(prepared, tmp_path, monk
     monkeypatch.setattr(retail, 'atomic_torch_save', original_save)
     retail.train(prepared)
     resumed = torch.load(prepared.output/'final.pt', weights_only=False)
+    assert resumed['stochastic_condition'] is False
+    assert resumed['identity']['stochastic_condition'] is False
     prepared.output = tmp_path/'continuous'
     retail.train(prepared)
     continuous = torch.load(prepared.output/'final.pt', weights_only=False)
@@ -131,3 +133,13 @@ def test_generate_refuses_to_overwrite(prepared, tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='Output files already exist'):
         retail.generate(args)
     assert existing.read_text(encoding='utf-8') == 'keep\n'
+
+
+def test_deterministic_generation_rejects_stochastic_checkpoint(prepared, tmp_path):
+    config = artifact.read_json(prepared.config)
+    checkpoint = tmp_path/'stochastic.pt'
+    torch.save({'model': {}, 'config': config, 'step': 1,
+                'stochastic_condition': True}, checkpoint)
+    args = Namespace(bank=prepared.bank, checkpoint=checkpoint, device='cpu')
+    with pytest.raises(ValueError, match='trained with stochastic'):
+        retail.generate(args)
