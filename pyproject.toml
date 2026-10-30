@@ -3,18 +3,18 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tabjepa"
+name = "jets-temporal"
 version = "0.2.0"
-description = "JEPA auxiliary experiments for irregular mixed-type event generation"
+description = "Joint-embedding prediction for temporal tabular event sequence generation"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24,<3", "torch>=2.3"]
+dependencies = ["numpy>=1.24,<3", "torch>=2.3", "pandas>=2", "scipy>=1.10", "scikit-learn>=1.3"]
 
 [project.optional-dependencies]
 retail = ["openpyxl>=3.1"]
 dev = ["pytest>=7", "mypy>=1"]
 
 [tool.setuptools.packages.find]
-include = ["pgjepa*"]
+include = ["jets*", "experiments*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -24,4 +24,4 @@ addopts = "-ra"
 python_version = "3.11"
 ignore_missing_imports = true
 check_untyped_defs = true
-files = ["pgjepa"]
+files = ["jets", "experiments"]

@@ -13,6 +13,14 @@ tmp/
 outputs/
 data/
 
+# Historical experiment implementations remain local for checkpoint provenance.
+pgjepa/
+scripts/
+configs/retail_*.json
+tests/test_a7_*.py
+tests/test_a9_*.py
+tests/test_jets_parity.py
+
 # Local data, generated artifacts, checkpoints and environment secrets
 *.pt
 *.pth
@@ -30,7 +38,7 @@ data/
 .env.*
 !.env.example
 
-# Keep the current framework document; archive and local cleanup notes stay local.
+# Keep the JETS framework document; historical and local notes stay local.
 docs/*
-!docs/A9_COMBINED_ON_FRAMEWORK_KO.md
+!docs/JETS_FRAMEWORK.md
 jepa_auxiliary_sequential_tabular_generation_poc_protocol_2026-10-26.md
