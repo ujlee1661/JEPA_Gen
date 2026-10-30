@@ -36,9 +36,20 @@ of free-count generation. `counts` and `metrics` paths are optional, though a
 complete five-score comparison requires pinned original evaluator receipts.
 Optional `checkpoint`, `training_receipt`, `training_manifest` must be supplied
 together to use the generic checkpoint/seed verification; otherwise the result
-is explicitly marked as having unverified training provenance. Other baseline
-receipt formats require separate verification and must not be represented as
-independently checked by this report.
+is explicitly marked as having unverified training provenance. For TabARGN,
+`training_evidence` can instead point to its `training_complete.json`: the
+training seed, exit status, declared budget and every listed weight digest are
+verified. A matching training receipt by itself does **not** prove that a
+generated CSV was produced by those weights; generation-to-checkpoint linkage
+is tracked separately. Other baseline receipt formats require separate
+verification and must not be represented as independently checked here.
+
+For the supported TabARGN study layout, create planned cases with:
+
+```bash
+python -m analysis.collect_tabargn_cases --study-root /path/to/baseline_study \
+  --output /path/to/new_tabargn_cases.json
+```
 When present, counts must cover every reference parent and match the generated
 rows. A receipt lacking a child digest is explicitly marked as not directly
 linked; an incorrect evaluator digest is rejected. For models conditioning on

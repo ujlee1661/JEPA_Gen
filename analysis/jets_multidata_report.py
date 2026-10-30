@@ -189,6 +189,7 @@ def aggregates(rows, expected_train_seeds, expected_generation_seeds):
                   'generation_seeds': seeds, 'count_source': sorted(set(v['count_source'] for v in values)),
                   'complete_generations': set(map(str, seeds)) == set(map(str, expected_generation_seeds)),
                   'training_provenance_verified': all(v.get('training_provenance_verified', False) for v in values),
+                  'generation_checkpoint_link_verified': all(v.get('generation_checkpoint_link_verified', False) for v in values),
                   'complete_scores': all(isinstance(v.get('metrics'), dict) and
                       all(isinstance(v['metrics'].get(name), (int, float)) and
                           np.isfinite(v['metrics'][name]) for name in SCORE_NAMES) for v in values)}
@@ -207,6 +208,7 @@ def aggregates(rows, expected_train_seeds, expected_generation_seeds):
                'complete': set(seeds) == set(map(str, expected_train_seeds)) and all(
                    v['complete_generations'] and v['complete_scores'] for v in values),
                'independent_training_receipts_verified': all(v['training_provenance_verified'] for v in values),
+               'generation_checkpoint_links_verified': all(v['generation_checkpoint_link_verified'] for v in values),
                'interpretation': 'within-training generation means, followed by statistics across independent training runs'}
         keys = sorted({key for value in values for key in value if key.endswith('_mean')})
         for key in keys:
@@ -245,11 +247,14 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
         training_fields = ('checkpoint', 'training_receipt', 'training_manifest')
         if any(case.get(name) for name in training_fields) and not all(case.get(name) for name in training_fields):
             raise ValueError('Training provenance requires checkpoint, receipt and manifest together')
+        if case.get('training_evidence') and any(case.get(name) for name in training_fields):
+            raise ValueError('Use either explicit checkpoint receipts or a baseline training evidence receipt')
         checkpoint = Path(case['checkpoint']) if case.get('checkpoint') else None
         training_receipt = Path(case['training_receipt']) if case.get('training_receipt') else None
         training_manifest = Path(case['training_manifest']) if case.get('training_manifest') else None
+        training_evidence = Path(case['training_evidence']) if case.get('training_evidence') else None
         missing = next((path for path in (counts, generated_parent_file, receipt_path,
-                                         checkpoint, training_receipt, training_manifest)
+                                         checkpoint, training_receipt, training_manifest, training_evidence)
                         if path is not None and not path.is_file()), None)
         if missing is not None:
             if allow_partial:
@@ -263,6 +268,8 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
         checkpoint_digest = sha256(checkpoint) if checkpoint else None
         train_receipt_digest = sha256(training_receipt) if training_receipt else None
         train_manifest_digest = sha256(training_manifest) if training_manifest else None
+        train_evidence_digest = sha256(training_evidence) if training_evidence else None
+        weights_digest = {}
         if checkpoint and training_receipt and training_manifest:
             trained = json.loads(training_receipt.read_text(encoding='utf-8'))
             training = json.loads(training_manifest.read_text(encoding='utf-8'))
@@ -272,6 +279,24 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
                 raise ValueError('Training manifest belongs to a different training seed')
             if case.get('expected_updates') is not None and trained.get('updates') != case['expected_updates']:
                 raise ValueError('Training receipt does not match expected update count')
+        if training_evidence:
+            training = json.loads(training_evidence.read_text(encoding='utf-8'))
+            if str(training.get('training_seed')) != str(case['training_seed']):
+                raise ValueError('Baseline training evidence belongs to a different training seed')
+            if training.get('training_exit_code') != 0:
+                raise ValueError('Baseline training did not complete successfully')
+            budget_field = case.get('training_budget_field')
+            if budget_field and training.get(budget_field) != case.get('expected_training_budget'):
+                raise ValueError('Baseline training evidence does not match the declared budget')
+            weights = training.get('weights')
+            if not isinstance(weights, dict) or not weights:
+                raise ValueError('Baseline training evidence must record model weight digests')
+            root = training_evidence.resolve().parent
+            for relative, expected in weights.items():
+                path = (root / relative).resolve()
+                if not path.is_relative_to(root) or not path.is_file() or sha256(path) != expected:
+                    raise ValueError('Baseline training weight path or digest mismatch')
+                weights_digest[str(path)] = expected
         if receipt_path:
             generation = json.loads(receipt_path.read_text(encoding='utf-8'))
             if generation.get('child_sha256') != child_digest:
@@ -310,6 +335,8 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
                 or (checkpoint is not None and checkpoint_digest and sha256(checkpoint) != checkpoint_digest)
                 or (training_receipt is not None and train_receipt_digest and sha256(training_receipt) != train_receipt_digest)
                 or (training_manifest is not None and train_manifest_digest and sha256(training_manifest) != train_manifest_digest)
+                or (training_evidence is not None and train_evidence_digest and sha256(training_evidence) != train_evidence_digest)
+                or any(sha256(Path(path)) != expected for path, expected in weights_digest.items())
                 or (metric_path is not None and metric_digest and sha256(metric_path) != metric_digest)):
             raise ValueError('A generated source changed while the report was being prepared')
         rows.append({**case, 'child_sha256': child_digest, 'counts_sha256': counts_digest,
@@ -318,7 +345,10 @@ def run(reference_root, cases_file, output, *, allow_partial=False):
                      'training_checkpoint_sha256': checkpoint_digest,
                      'training_receipt_sha256': train_receipt_digest,
                      'training_manifest_sha256': train_manifest_digest,
-                     'training_provenance_verified': bool(checkpoint and training_receipt and training_manifest),
+                     'training_evidence_sha256': train_evidence_digest,
+                     'training_weight_sha256': weights_digest,
+                     'training_provenance_verified': bool((checkpoint and training_receipt and training_manifest) or training_evidence),
+                     'generation_checkpoint_link_verified': bool(checkpoint_digest and receipt_path),
                      'metrics_sha256': metric_digest,
                      'metric_link': score_link, 'metrics': score, 'distribution': value})
     train, overall = aggregates(rows, payload.get('expected_training_seeds', [1, 2, 3]),

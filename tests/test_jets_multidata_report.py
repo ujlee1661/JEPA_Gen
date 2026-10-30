@@ -7,6 +7,7 @@ import pytest
 
 from analysis.jets_multidata_report import SCORER_SHA256, aggregates, compare, run
 from analysis.collect_jets_cases import build
+from analysis.collect_tabargn_cases import build as build_baseline_cases
 
 
 def test_jets_case_manifest_covers_training_and_generation_seeds(tmp_path):
@@ -16,6 +17,9 @@ def test_jets_case_manifest_covers_training_and_generation_seeds(tmp_path):
     assert {case['training_seed'] for case in data['samples']} == {1, 2, 3}
     assert {case['generation_seed'] for case in data['samples']} == {1, 2, 3}
     assert all('generated N' in case['count_source'] for case in data['samples'])
+    baseline = build_baseline_cases(tmp_path)
+    assert len(baseline['samples']) == 36
+    assert all(case['counts_value_column'] == 'N' for case in baseline['samples'])
 
 
 def test_native_count_gaps_and_mixed_column_distributions(tmp_path):
@@ -142,3 +146,25 @@ def test_training_provenance_checks_checkpoint_seed_and_budget(tmp_path):
     train.write_text(json.dumps({'checkpoint_sha256':sha256(ckpt),'updates':10}))
     with pytest.raises(ValueError,match='update count'):
         run(tmp_path/'data',source,tmp_path/'budget.json',allow_partial=True)
+
+
+def test_baseline_receipt_checks_all_weights_but_does_not_claim_generation_link(tmp_path):
+    from experiments.data import sha256
+    raw=tmp_path/'data'/'dataset'/'raw';raw.mkdir(parents=True)
+    pd.DataFrame({'account_id':[1]}).to_csv(raw/'account.csv',index=False)
+    pd.DataFrame({'account_id':[1],'t_offset':[1.],'x':[2.]}).to_csv(raw/'trans.csv',index=False)
+    child=tmp_path/'child.csv';pd.DataFrame({'entity':[1],'t_offset':[1.],'x':[2.]}).to_csv(child,index=False)
+    weights=tmp_path/'model.pt';weights.write_bytes(b'weights')
+    evidence=tmp_path/'training_complete.json';evidence.write_text(json.dumps({'training_seed':1,
+        'max_epochs':100, 'training_exit_code':0, 'weights':{'model.pt':sha256(weights)}}))
+    receipt=tmp_path/'generation.json';receipt.write_text(json.dumps({'child_sha256':sha256(child),'generation_seed':1}))
+    case={'dataset':'dataset','model':'TabARGN','training_seed':1,'generation_seed':1,
+          'count_source':'generated','child':str(child),'receipt':str(receipt),'training_evidence':str(evidence),
+          'training_budget_field':'max_epochs','expected_training_budget':100}
+    source=tmp_path/'cases.json';source.write_text(json.dumps({'schemas':{'dataset':{'numeric':['x'],'categorical':[]}},'samples':[case]}))
+    result=run(tmp_path/'data',source,tmp_path/'valid.json',allow_partial=True)
+    assert result['per_generation'][0]['training_provenance_verified']
+    assert not result['per_generation'][0]['generation_checkpoint_link_verified']
+    weights.write_bytes(b'changed')
+    with pytest.raises(ValueError,match='weight path or digest'):
+        run(tmp_path/'data',source,tmp_path/'wrong.json',allow_partial=True)
