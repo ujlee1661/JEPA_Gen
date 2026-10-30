@@ -44,7 +44,8 @@ def test_generation_replicates_are_nested_in_train_seed():
     for seed, vals in [(1, [1., 3., 5.]), (2, [3., 5., 7.]), (3, [5., 7., 9.])]:
         for gen, value in enumerate(vals, 1):
             rows.append({'dataset': 'sample', 'model': 'JETS', 'training_seed': seed,
-                'generation_seed': gen, 'count_source': 'generated', 'metrics': {'ts': value},
+                'generation_seed': gen, 'count_source': 'generated',
+                'metrics': {'ts': value, 'cs': value, 'sd': value, 'lg': value, 'joint_ff': value},
                 'distribution': {'events': 1, 'count_ks_all_parents': value,
                     'internal_gap_ks': value, 'active_span_ks': value,
                     'numeric': {'log_amount': {'expm1_generated': {'mean': value, 'std': 1.,

@@ -18,6 +18,7 @@ from scipy.stats import ks_2samp
 from experiments.data import sha256
 
 SCORER_SHA256 = 'f254228d9917dfed8fefb1beb057cbf87daad041622c1f021b2d4e4ab67b8dd3'
+SCORE_NAMES = ('ts', 'cs', 'sd', 'lg', 'joint_ff')
 
 
 def distribution(values):
@@ -123,7 +124,7 @@ def scalar_metrics(row):
             for metric in ('mean', 'std', 'p50', 'p95', 'p99', 'zero_fraction'):
                 result[f'{kind}.{metric}'] = dist[kind][metric]
     if row.get('metrics'):
-        result.update({key: row['metrics'].get(key) for key in ('ts', 'cs', 'sd', 'lg', 'joint_ff')})
+        result.update({key: row['metrics'].get(key) for key in SCORE_NAMES})
     for column, info in dist['numeric'].items():
         for key in ('source_ks', 'expm1_ks'):
             if key in info:
@@ -152,7 +153,9 @@ def aggregates(rows, expected_train_seeds, expected_generation_seeds):
         record = {'dataset': dataset, 'model': model, 'training_seed': train_seed,
                   'generation_seeds': seeds, 'count_source': sorted(set(v['count_source'] for v in values)),
                   'complete_generations': set(map(str, seeds)) == set(map(str, expected_generation_seeds)),
-                  'complete_scores': all(v.get('metrics') is not None for v in values)}
+                  'complete_scores': all(isinstance(v.get('metrics'), dict) and
+                      all(isinstance(v['metrics'].get(name), (int, float)) and
+                          np.isfinite(v['metrics'][name]) for name in SCORE_NAMES) for v in values)}
         flattened = [scalar_metrics(value) for value in values]
         for metric in sorted(set().union(*(x.keys() for x in flattened))):
             selected = [x[metric] for x in flattened if x.get(metric) is not None]
