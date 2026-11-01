@@ -2,7 +2,35 @@
 from __future__ import annotations
 import numpy as np
 import torch
-from ..layers.spacing import encode_spacing
+
+
+def _encode_suffix_spacing(times, anchor, end):
+    """Encode a suffix using its original endpoint without reconstructing it.
+
+    Reconstructing ``end`` from ``anchor + (end - anchor)`` can round just
+    below an event at the endpoint. Keep the same validation and CLR formula
+    as ``encode_spacing`` while using the already-declared endpoint directly.
+    """
+    horizon = end - anchor
+    if not np.isfinite([anchor, horizon, end]).all() or horizon < 0:
+        raise ValueError('Finite anchor and nonnegative horizon required')
+    times = torch.as_tensor(times, dtype=torch.float64)
+    if times.ndim != 1 or not bool(torch.isfinite(times).all()):
+        raise ValueError('Finite one-dimensional ordered times required')
+    if bool((times < anchor).any()) or bool((times > end).any()):
+        raise ValueError('Event outside the declared window')
+    if bool((times[1:] < times[:-1]).any()):
+        raise ValueError('Event times must already be ordered')
+    endpoints = torch.cat([times.new_tensor([anchor]), times, times.new_tensor([end])])
+    gaps = endpoints[1:] - endpoints[:-1]
+    active = gaps > 0
+    clr = torch.zeros_like(gaps)
+    if horizon > 0:
+        if not bool(active.any()):
+            raise ValueError('Positive duration is not representable at this calendar precision')
+        log_gap = gaps[active].log()
+        clr[active] = log_gap - log_gap.mean()
+    return {'clr': clr, 'active': active, 'gaps': gaps}
 
 def _complete_window(raw, time_scale, metadata=None):
     count=int(raw['count'])
@@ -94,7 +122,7 @@ def build_suffix_window(cleanwindow, k):
     end=float(cleanwindow['anchor'])+float(cleanwindow['delta'])
     anchor=float(cleanwindow['times'][k-1]) if k else float(cleanwindow['anchor'])
     times=cleanwindow['times'][k:].detach().cpu().clone()
-    spacing=encode_spacing(times,anchor,end-anchor)
+    spacing=_encode_suffix_spacing(times,anchor,end)
     raw={'count':count-k,'anchor':anchor,'delta':end-anchor,'times':times,
         'marks':cleanwindow['marks'][k:].clone(),'attrs':cleanwindow['attrs'],
         'past_tokens':cleanwindow['past_tokens'],**spacing}
